@@ -17,10 +17,14 @@
 //! Implementation of the structures defined in hardware/interfaces/security/see/authmgr/aidl/
 //! android/hardware/security/see/authmgr/SignedConnectionRequest.cddl
 
+use crate::{amc_err, Error, ErrorCode, Result};
 use alloc::vec::Vec;
+use authgraph_core::key::{EcSignKey, EcVerifyKey};
+use authgraph_core::traits::EcDsa;
+use coset::iana::Algorithm;
 use coset::{
-    cbor::Value, AsCborValue, CborSerializable, CoseError, Result as CoseResult,
-    TaggedCborSerializable,
+    cbor::Value, AsCborValue, CborSerializable, CoseError, CoseSign1, CoseSign1Builder,
+    HeaderBuilder, Result as CoseResult, TaggedCborSerializable,
 };
 use num_derive::FromPrimitive;
 use num_traits::FromPrimitive;
@@ -182,9 +186,79 @@ impl AsCborValue for ConnectionRequest {
 
 impl CborSerializable for ConnectionRequest {}
 
+impl ConnectionRequest {
+    /// Create a new connection request on top of FFA transport
+    pub fn new_for_ffa_transport(
+        challenge: Challenge,
+        fe_id: TransportID,
+        be_id: TransportID,
+    ) -> Self {
+        Self {
+            challenge,
+            transport_type: TransportType::FFA,
+            transport_id_info: TransportIdInfo::FFATransportId { fe_id, be_id },
+        }
+    }
+
+    /// Sign the given `ConnectionRequest`. We use the EcDsa trait from the authgraph traits.
+    /// Note: for now, we expect the EcSignKey to be passed into this method, but for the
+    /// environments where the private signing key cannot be passed directly, we need to introduce
+    /// something similar to the `sign_data` trait method in the authgraph `Device` trait.
+    pub fn sign(
+        self,
+        signing_key: &EcSignKey,
+        ecdsa: &dyn EcDsa,
+        cose_sign_algorithm: Algorithm,
+    ) -> Result<Vec<u8>> {
+        let conn_req_encoded = self.to_vec()?;
+        let aad_encoded =
+            ExternalAADForDICESigned { uuid_of_payload_struct: CONNECTION_REQUEST_UUID }
+                .to_vec()?;
+        let protected = HeaderBuilder::new().algorithm(cose_sign_algorithm).build();
+        let cose_sign1 = CoseSign1Builder::new()
+            .protected(protected)
+            .try_create_detached_signature(&conn_req_encoded, &aad_encoded, |data| {
+                ecdsa.sign(signing_key, data)
+            })
+            .map_err(|e| amc_err!(SigningFailed, "failed to sign data: {:?}", e))?
+            .build();
+        Ok(cose_sign1.to_vec()?)
+    }
+
+    /// Verify a signature on the given `ConnectionRequest`.
+    pub fn verify(
+        self,
+        signature: &[u8],
+        verify_key: &EcVerifyKey,
+        ecdsa: &dyn EcDsa,
+    ) -> Result<()> {
+        let cose_sign1 = CoseSign1::from_slice(signature)?;
+        let conn_req_encoded = self.to_vec()?;
+        let aad_encoded =
+            ExternalAADForDICESigned { uuid_of_payload_struct: CONNECTION_REQUEST_UUID }
+                .to_vec()?;
+        verify_key.validate_cose_key_params().map_err(|e| {
+            amc_err!(SignatureVerificationFailed, "failed to validate verification key: {:?}", e)
+        })?;
+        cose_sign1
+            .verify_detached_signature(&conn_req_encoded, &aad_encoded, |signature, data| {
+                ecdsa.verify_signature(verify_key, data, signature)
+            })
+            .map_err(|e| {
+                amc_err!(SignatureVerificationFailed, "failed to verify signature: {:?}", e)
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use authgraph_boringssl::ec::BoringEcDsa;
+    use authgraph_boringssl::BoringRng;
+    use authgraph_core::key::CertChain;
+    use authgraph_core::traits::Rng;
+    use authgraph_core_test::create_dice_cert_chain_for_guest_os;
+
     #[test]
     fn test_cbor_enc_dec_connection_request() {
         let conn_req = ConnectionRequest {
@@ -196,5 +270,42 @@ mod tests {
         let decoded_conn_req =
             ConnectionRequest::from_slice(&encoded_conn_req).expect("cbor decoding failed.");
         assert_eq!(conn_req, decoded_conn_req);
+    }
+    #[test]
+    fn test_sign_verify_connection_request() {
+        // Create a cert chain with a private key
+        let (sign_key, _, cert_chain_bytes) = create_dice_cert_chain_for_guest_os(None);
+        // Retrieve the public signing key from the cert chain
+        let cert_chain =
+            CertChain::from_slice(&cert_chain_bytes).expect("failed to decode the dice chain");
+        let ecdsa = BoringEcDsa;
+        let verify_key = cert_chain.validate(&ecdsa).expect("failed to validate the cert chain");
+        let signing_algorithm = verify_key.get_cose_sign_algorithm();
+        // Sign the connection request
+        let rng = BoringRng;
+        let mut challenge = [0u8; 32];
+        rng.fill_bytes(&mut challenge);
+        let fe_id = u16::from_le_bytes([0x34, 0x12]);
+        let be_id = u16::from_le_bytes([0x24, 0x13]);
+        let conn_req = ConnectionRequest {
+            challenge,
+            transport_type: TransportType::FFA,
+            transport_id_info: TransportIdInfo::FFATransportId { fe_id, be_id },
+        };
+        let signature = conn_req
+            .clone()
+            .sign(&sign_key, &ecdsa, signing_algorithm)
+            .expect("failure in signature");
+        // Verify
+        assert!(conn_req.verify(&signature, &verify_key, &ecdsa).is_ok());
+        // Try to verify signature against a different connection request and expect failure
+        let mut challenge_d = [0u8; 32];
+        rng.fill_bytes(&mut challenge_d);
+        let conn_req_d = ConnectionRequest {
+            challenge: challenge_d,
+            transport_type: TransportType::FFA,
+            transport_id_info: TransportIdInfo::FFATransportId { fe_id, be_id },
+        };
+        assert!(conn_req_d.verify(&signature, &verify_key, &ecdsa).is_err())
     }
 }
