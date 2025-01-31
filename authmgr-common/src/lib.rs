@@ -18,4 +18,50 @@
 
 #![no_std]
 extern crate alloc;
+
+use alloc::string::String;
+use coset::CoseError;
+
 pub mod signed_connection_request;
+
+/// AuthMgr common error type
+#[derive(Debug)]
+pub struct Error(pub ErrorCode, pub String);
+
+/// AuthMgr common error codes
+#[derive(Debug)]
+pub enum ErrorCode {
+    /// CBOR encoding failed
+    CborEncodingFailed,
+    /// CBOR decoding failed
+    CborDecodingFailed,
+    /// Signing failed
+    SigningFailed,
+    /// Signature verification failed
+    SignatureVerificationFailed,
+    /// Other error
+    UnknownError,
+}
+
+/// AuthMgr common result type
+pub type Result<T, E = Error> = core::result::Result<T, E>;
+
+impl core::convert::From<CoseError> for Error {
+    fn from(e: CoseError) -> Self {
+        match e {
+            CoseError::DecodeFailed(_) => amc_err!(CborDecodingFailed, "{}", e),
+            CoseError::EncodeFailed => amc_err!(CborEncodingFailed, "{}", e),
+            CoseError::UnexpectedItem(_, _) => amc_err!(CborDecodingFailed, "{}", e),
+            _ => amc_err!(UnknownError, "{}", e),
+        }
+    }
+}
+
+/// Macro to build an [`Error`] instance.
+/// E.g. use: `amc_err!(SigningFailed, "some {} format", arg)`.
+#[macro_export]
+macro_rules! amc_err {
+    { $error_code:ident, $($arg:tt)+ } => {
+        Error(ErrorCode::$error_code,
+              alloc::format!("{}:{}: {}", file!(), line!(), format_args!($($arg)+))) };
+}
