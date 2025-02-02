@@ -1,0 +1,200 @@
+// Copyright 2025 Google LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//      http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+//
+////////////////////////////////////////////////////////////////////////////////
+
+//! Implementation of the structures defined in hardware/interfaces/security/see/authmgr/aidl/
+//! android/hardware/security/see/authmgr/SignedConnectionRequest.cddl
+
+use alloc::vec::Vec;
+use coset::{
+    cbor::Value, AsCborValue, CborSerializable, CoseError, Result as CoseResult,
+    TaggedCborSerializable,
+};
+use num_derive::FromPrimitive;
+use num_traits::FromPrimitive;
+
+// According to the SignedConnectionRequest.cddl;
+const CBOR_CONNECTION_REQUEST_ARRAY_LEN: usize = 3;
+
+// According to the SignedConnectionRequest.cddl;
+const CBOR_FFA_TRANSPORT_ID_ARRAY_LEN: usize = 2;
+
+// Tag for the CBOR type buuid = #6.37(bstr .size 16) - see RFC8610 - Section 3.6
+const BUUID_TAG: u64 = 37;
+
+/// The unique id assigned to the `ConnectionRequest` payload structure
+pub const CONNECTION_REQUEST_UUID: [u8; 16] = [
+    0x34, 0xc8, 0x29, 0x16, 0x95, 0x79, 0x4d, 0x86, 0xba, 0xef, 0x59, 0x2a, 0x06, 0x64, 0x19, 0xe4,
+];
+
+/// Type alias for a cryptographic random of 32 bytes
+pub type Challenge = [u8; 32];
+
+/// Type alias for transport id (a.k.a. VM ID)
+pub type TransportID = u16;
+
+/// External AAD to be added to any Sig_structure signed by the DICE signing key, with the mandatory
+/// field of `uuid_of_payload_struct` of type UUID v4 (RFC 9562). This field is required to ensure
+/// that both the signer and the verifier refer to the same payload structure, given that there are
+/// various payload structures signed by the DICE signing key in different protocols in Android.
+pub struct ExternalAADForDICESigned {
+    uuid_of_payload_struct: [u8; 16],
+}
+
+impl AsCborValue for ExternalAADForDICESigned {
+    fn from_cbor_value(value: Value) -> CoseResult<Self> {
+        if let Value::Bytes(uuid) = value {
+            return Ok(Self {
+                uuid_of_payload_struct: uuid.as_slice().try_into().map_err(|_e| {
+                    CoseError::UnexpectedItem("an invalid vector of bytes", "A valid UUID [u8; 16]")
+                })?,
+            });
+        }
+        Err(CoseError::UnexpectedItem("a vector of 16 bytes", "Cbor value of non-bytes"))
+    }
+
+    fn to_cbor_value(self) -> CoseResult<Value> {
+        Ok(Value::Bytes(self.uuid_of_payload_struct.to_vec()))
+    }
+}
+
+impl CborSerializable for ExternalAADForDICESigned {}
+
+impl TaggedCborSerializable for ExternalAADForDICESigned {
+    const TAG: u64 = BUUID_TAG;
+}
+
+/// An integer that identifies the type of the transport used for communication between clients and
+/// trusted services
+#[repr(u8)]
+#[derive(Clone, Debug, FromPrimitive, PartialEq)]
+pub enum TransportType {
+    /// FFA transport
+    FFA = 1,
+}
+
+/// Identity information of the peers provided by the transport layer
+#[derive(Clone, Debug, PartialEq)]
+pub enum TransportIdInfo {
+    /// FFA transport identity information of the peers
+    FFATransportId {
+        /// AuthMgr FE's transport ID (a.k.a VM ID)
+        fe_id: TransportID,
+        /// AuthMgr BE's transport ID (a.k.a VM ID)
+        be_id: TransportID,
+    },
+}
+
+/// The payload structure signed by the DICE signing key for authentication
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConnectionRequest {
+    challenge: Challenge,
+    transport_type: TransportType,
+    transport_id_info: TransportIdInfo,
+}
+
+impl AsCborValue for ConnectionRequest {
+    fn from_cbor_value(value: Value) -> CoseResult<Self> {
+        let mut connection_req_cbor_array = match value {
+            Value::Array(a) if a.len() == CBOR_CONNECTION_REQUEST_ARRAY_LEN => a,
+            _ => {
+                return Err(CoseError::UnexpectedItem("_", "array with three items"));
+            }
+        };
+        let transport_id_info_cbor_val = connection_req_cbor_array.remove(2);
+        let transport_type = match connection_req_cbor_array.remove(1) {
+            Value::Integer(ttype) => (TransportType::from_u8(ttype.try_into()?))
+                .ok_or(CoseError::UnexpectedItem("_", "valid integer for transport id"))?,
+            _ => {
+                return Err(CoseError::UnexpectedItem("_", "Integer"));
+            }
+        };
+        let transport_id_info = match transport_type {
+            TransportType::FFA => {
+                let mut transport_id_info_cbor_array = match transport_id_info_cbor_val {
+                    Value::Array(a) if a.len() == CBOR_FFA_TRANSPORT_ID_ARRAY_LEN => a,
+                    _ => {
+                        return Err(CoseError::UnexpectedItem("_", "array with two items"));
+                    }
+                };
+                let be_id: TransportID = match transport_id_info_cbor_array.remove(1) {
+                    Value::Integer(i) => i.try_into()?,
+                    _ => {
+                        return Err(CoseError::UnexpectedItem("_", "Integer"));
+                    }
+                };
+                let fe_id: TransportID = match transport_id_info_cbor_array.remove(0) {
+                    Value::Integer(i) => i.try_into()?,
+                    _ => {
+                        return Err(CoseError::UnexpectedItem("_", "Integer"));
+                    }
+                };
+                TransportIdInfo::FFATransportId { fe_id, be_id }
+            }
+        };
+
+        let challenge: Challenge = match connection_req_cbor_array.remove(0) {
+            Value::Bytes(c) => c.as_slice().try_into().map_err(|_e| {
+                CoseError::UnexpectedItem("array of bytes with incorrect length", "[u8; 32]")
+            })?,
+            _ => {
+                return Err(CoseError::UnexpectedItem(
+                    "a cbor value that is not bytes",
+                    "[u8; 32]",
+                ));
+            }
+        };
+        Ok(Self { challenge, transport_type, transport_id_info })
+    }
+
+    fn to_cbor_value(self) -> CoseResult<Value> {
+        let mut array = Vec::<Value>::new();
+        array
+            .try_reserve(CBOR_CONNECTION_REQUEST_ARRAY_LEN)
+            .map_err(|_| CoseError::EncodeFailed)?;
+        array.push(Value::Bytes(self.challenge.to_vec()));
+        array.push(Value::Integer((self.transport_type as u8).into()));
+        match self.transport_id_info {
+            TransportIdInfo::FFATransportId { fe_id, be_id } => {
+                let mut arr = Vec::<Value>::new();
+                arr.try_reserve(CBOR_FFA_TRANSPORT_ID_ARRAY_LEN)
+                    .map_err(|_| CoseError::EncodeFailed)?;
+                arr.push(Value::Integer(fe_id.into()));
+                arr.push(Value::Integer(be_id.into()));
+                array.push(Value::Array(arr))
+            }
+        }
+        Ok(Value::Array(array))
+    }
+}
+
+impl CborSerializable for ConnectionRequest {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_cbor_enc_dec_connection_request() {
+        let conn_req = ConnectionRequest {
+            challenge: [1; 32],
+            transport_type: TransportType::FFA,
+            transport_id_info: TransportIdInfo::FFATransportId { fe_id: 16, be_id: 30 },
+        };
+        let encoded_conn_req = conn_req.clone().to_vec().expect("cbor encoding failed.");
+        let decoded_conn_req =
+            ConnectionRequest::from_slice(&encoded_conn_req).expect("cbor decoding failed.");
+        assert_eq!(conn_req, decoded_conn_req);
+    }
+}
