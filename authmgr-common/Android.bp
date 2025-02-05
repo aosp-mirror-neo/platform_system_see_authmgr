@@ -23,6 +23,7 @@ rust_library {
     host_supported: true,
     vendor_available: true,
     rustlibs: [
+        "libauthgraph_core",
         "libcoset",
         "liblog_rust",
         "libnum_traits",
@@ -38,10 +39,12 @@ rust_test {
     srcs: ["src/lib.rs"],
     host_supported: true,
     rustlibs: [
+        "libauthgraph_boringssl",
+        "libauthgraph_core_test",
+        "libauthgraph_core",
         "libauthmgr_common",
         "libcoset",
         "libnum_traits",
-
     ],
     proc_macros: [
         "libnum_derive",
