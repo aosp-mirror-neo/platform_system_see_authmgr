@@ -18,6 +18,7 @@
 
 #![no_std]
 extern crate alloc;
+pub mod authorization;
 pub mod data_structures;
 pub mod error;
 pub mod traits;
