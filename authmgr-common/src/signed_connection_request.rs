@@ -49,6 +49,10 @@ pub type Challenge = [u8; 32];
 /// Type alias for transport id (a.k.a. VM ID)
 pub type TransportID = u16;
 
+/// This is a temporary measure to use a hardcoded transport id for AuthMgr BE.
+/// TODO: b/392905377
+pub const TEMP_AUTHMGR_BE_TRANSPORT_ID: u16 = u16::from_le_bytes([0x24, 0x12]);
+
 /// External AAD to be added to any Sig_structure signed by the DICE signing key, with the mandatory
 /// field of `uuid_of_payload_struct` of type UUID v4 (RFC 9562). This field is required to ensure
 /// that both the signer and the verifier refer to the same payload structure, given that there are
@@ -274,7 +278,7 @@ mod tests {
     #[test]
     fn test_sign_verify_connection_request() {
         // Create a cert chain with a private key
-        let (sign_key, _, cert_chain_bytes) = create_dice_cert_chain_for_guest_os(None);
+        let (sign_key, _, cert_chain_bytes) = create_dice_cert_chain_for_guest_os(None, 1);
         // Retrieve the public signing key from the cert chain
         let cert_chain =
             CertChain::from_slice(&cert_chain_bytes).expect("failed to decode the dice chain");
@@ -295,7 +299,7 @@ mod tests {
         let signature = conn_req
             .clone()
             .sign(&sign_key, &ecdsa, signing_algorithm)
-            .expect("failure in signature");
+            .expect("failure in signing");
         // Verify
         assert!(conn_req.verify(&signature, &verify_key, &ecdsa).is_ok());
         // Try to verify signature against a different connection request and expect failure
