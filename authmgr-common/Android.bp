@@ -25,6 +25,7 @@ rust_library {
     rustlibs: [
         "libauthgraph_core",
         "libcoset",
+        "libdice_policy",
         "liblog_rust",
         "libnum_traits",
     ],
@@ -43,7 +44,10 @@ rust_test {
         "libauthgraph_core_test",
         "libauthgraph_core",
         "libauthmgr_common",
+        "libauthmgr_common_util",
         "libcoset",
+        "libdice_policy",
+        "libdice_policy_builder",
         "libnum_traits",
     ],
     proc_macros: [
