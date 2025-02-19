@@ -140,3 +140,26 @@ pub struct AuthorizedClient {
     /// deletion.
     pub connected_services: Vec<String>,
 }
+
+/// Information of a persistent pvm instance stored in the persistent secure storage.
+/// Deletion of the persistent instances (and clients) at runtime is not currently supported.
+#[derive(Clone)]
+pub struct PersistentInstanceContext {
+    /// Version of the data structure format
+    pub version: i32,
+    /// Unique sequence number of the persistent instance
+    pub sequence_number: i32,
+    /// DICE policy
+    pub dice_policy: Policy,
+}
+
+/// Information of a persistent client stored in the persistent secure storage.
+#[derive(Clone)]
+pub struct PersistentClientContext {
+    /// Version of the data structure format
+    pub version: i32,
+    /// Unique sequence number of the persistent client
+    pub sequence_number: i32,
+    /// DICE policy
+    pub dice_policy: Policy,
+}
