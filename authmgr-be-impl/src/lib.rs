@@ -14,7 +14,12 @@
 //
 ////////////////////////////////////////////////////////////////////////////////
 
-//! Crate containing the trait implementations for the AuthMgr BE.
+//! Crate containing the example/mock implementations of some of the AuthMgr BE traits for testing
+//! purposes. These are the traits that can be implemented (mostly) independent of a concrete
+//! AuthMgr TA running in the TEE environment. For e.g. Crypto traits, Device trait (without the
+//! connection handover functionality) and the *Storage traits.
+//! This crate calls into the generic tests provided by the `libauthmgr_be_test` crate in order to
+//! run unit tests using the aforementioned (example) trait implementations.
 extern crate alloc;
 use authgraph_boringssl::{ec::BoringEcDsa, BoringRng};
 use authgraph_core::key::{CertChain, InstanceIdentifier, Policy};
@@ -93,3 +98,6 @@ impl Device for AuthMgrBeDevice {
         )?)
     }
 }
+
+#[cfg(test)]
+mod tests;
