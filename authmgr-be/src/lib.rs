@@ -13,7 +13,9 @@
 // limitations under the License.
 //
 ////////////////////////////////////////////////////////////////////////////////
+
 //! Entry point to the authmgr backend crate
+
 #![no_std]
 extern crate alloc;
 pub mod data_structures;
