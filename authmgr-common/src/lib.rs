@@ -26,6 +26,17 @@ use dice_policy::{DicePolicy, DICE_POLICY_VERSION};
 
 pub mod signed_connection_request;
 
+/// The command byte to indicate the intent to connect to the `IAuthMgrAuthorization` service via
+/// RPC binder
+pub const CMD_RPC: u8 = 0u8;
+/// The command byte to indicate the intent to establish a raw connection
+pub const CMD_RAW: u8 = 1u8;
+
+/// Token length is 32 bytes
+pub const TOKEN_LENGTH: usize = 32;
+/// Type alias for a cryptographic random token (sent from AuthMgrFE to BE) of 32 bytes
+pub type Token = [u8; TOKEN_LENGTH];
+
 /// AuthMgr common error type
 #[derive(Debug, PartialEq)]
 pub struct Error(pub ErrorCode, pub String);
