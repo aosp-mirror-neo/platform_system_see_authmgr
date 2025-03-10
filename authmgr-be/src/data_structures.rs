@@ -22,6 +22,7 @@ use crate::{
 };
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 use alloc::{string::String, vec::Vec};
 use authgraph_core::key::{CertChain, EcVerifyKey, InstanceIdentifier, Policy};
 use authmgr_common::{
@@ -34,10 +35,6 @@ use log::warn;
 pub const VERSION_PERSISTENT_INSTANCE_CONTEXT: i32 = 1;
 /// Version of the data structure format used to store details of a persistent client
 pub const VERSION_PERSISTENT_CLIENT_CONTEXT: i32 = 1;
-/// Version of the data structure format used to store details of a non persistent instance
-pub const VERSION_NON_PERSISTENT_INSTANCE_CONTEXT: i32 = 1;
-/// Version of the data structure format used to store details of a non persistent client
-pub const VERSION_NON_PERSISTENT_CLIENT_CONTEXT: i32 = 1;
 
 /// Default value for maximum number of entries in the cache for authentication started pVMs
 pub const MAX_SIZE_AUTH_STARTED_PVMS: usize = 6;
@@ -56,7 +53,7 @@ pub struct ClientId(pub Vec<u8>);
 /// clients in the pVM
 pub struct AuthenticatedConnectionState {
     /// Instance id of the pvm
-    pub instance_id: InstanceIdentifier,
+    pub instance_id: Arc<InstanceIdentifier>,
     /// Transport id of the pvm
     pub transport_id: TransportID,
     /// Unique sequence number assigned to the instance by the AuthMgr BE
@@ -76,7 +73,7 @@ pub struct AuthenticatedConnectionState {
 impl AuthenticatedConnectionState {
     /// Populate the information to be stored in-memory in the connection state
     pub fn new(
-        instance_id: InstanceIdentifier,
+        instance_id: Arc<InstanceIdentifier>,
         transport_id: TransportID,
         instance_seq_number: i32,
         dice_artifacts: DiceArtifacts,
@@ -136,7 +133,7 @@ impl AuthenticatedConnectionState {
 #[derive(Clone)]
 pub struct DiceArtifacts {
     /// DICE certificate chain
-    pub cert_chain: CertChain,
+    pub cert_chain: Arc<CertChain>,
     /// DICE poicy
     pub policy: Policy,
 }
@@ -186,11 +183,11 @@ pub struct AuthStartedPvm {
     /// Transport id of the pvm (a.k.a. VM ID)
     pub transport_id: TransportID,
     /// Instance id of the pvm
-    pub instance_id: InstanceIdentifier,
+    pub instance_id: Arc<InstanceIdentifier>,
     /// Challenge issued by the AuthMgr BE to this pvm
     pub challenge: Challenge,
     /// Certificate chain of the pvm
-    pub cert_chain: CertChain,
+    pub cert_chain: Arc<CertChain>,
 }
 
 impl AuthStartedPvm {
@@ -259,7 +256,7 @@ impl AuthStartedPvms {
     /// Remove all entries with a given instance id - this is used to remove all entries with
     /// an authenticated instance id.
     pub fn remove_via_instance_id(&mut self, instance_id: &InstanceIdentifier) {
-        self.auth_started_pvms.retain(|entry| &entry.instance_id != instance_id);
+        self.auth_started_pvms.retain(|entry| &*entry.instance_id != instance_id);
     }
 }
 
@@ -268,7 +265,7 @@ impl AuthStartedPvms {
 #[derive(PartialEq)]
 pub struct AuthenticatedPvm {
     /// Instance id of the pvm
-    pub instance_id: InstanceIdentifier,
+    pub instance_id: Arc<InstanceIdentifier>,
     /// Transport id of the pvm
     pub transport_id: TransportID,
 }
@@ -298,7 +295,7 @@ impl AuthenticatedPvms {
             ));
         }
         let authenticated_pvm = AuthenticatedPvm {
-            instance_id: auth_started_pvm.instance_id.clone(),
+            instance_id: Arc::clone(&auth_started_pvm.instance_id),
             transport_id: auth_started_pvm.transport_id,
         };
         self.authenticated_pvms.push(authenticated_pvm);
@@ -308,7 +305,7 @@ impl AuthenticatedPvms {
     /// Check if a pvm with a given instance id already exists in the list - this is used to prevent
     /// duplicated authentication attempts
     pub fn has_instance_id(&self, instance_id: &InstanceIdentifier) -> bool {
-        self.authenticated_pvms.iter().any(|entry| &entry.instance_id == instance_id)
+        self.authenticated_pvms.iter().any(|entry| &*entry.instance_id == instance_id)
     }
 
     /// Check if a pvm with a given transport id already exists in the list - this is used to
