@@ -22,3 +22,14 @@ pub mod authorization;
 pub mod data_structures;
 pub mod error;
 pub mod traits;
+
+/// Function that mimics `slice.to_vec()` but which detects allocation failures.
+#[inline]
+pub fn try_to_vec<T: Clone>(
+    s: &[T],
+) -> Result<alloc::vec::Vec<T>, alloc::collections::TryReserveError> {
+    let mut v = alloc::vec::Vec::new();
+    v.try_reserve(s.len())?;
+    v.extend_from_slice(s);
+    Ok(v)
+}

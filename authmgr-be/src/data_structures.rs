@@ -23,7 +23,7 @@ use crate::{
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
-use alloc::{string::String, vec::Vec};
+use alloc::vec::Vec;
 use authgraph_core::key::{CertChain, EcVerifyKey, InstanceIdentifier, Policy};
 use authmgr_common::{
     signed_connection_request::{Challenge, TransportID},
@@ -100,7 +100,7 @@ impl AuthenticatedConnectionState {
         &mut self,
         client_id: &ClientId,
     ) -> Option<&mut AuthorizedClient> {
-        self.authorized_clients.iter_mut().find(|client| client.client_id == *client_id)
+        self.authorized_clients.iter_mut().find(|client| *client.client_id == *client_id)
     }
 
     /// Insert the authorized client into into the cache
@@ -135,7 +135,7 @@ pub struct DiceArtifacts {
     /// DICE certificate chain
     pub cert_chain: Arc<CertChain>,
     /// DICE poicy
-    pub policy: Policy,
+    pub policy: Arc<Policy>,
 }
 
 /// Information associated with an authorized client. This information is used to check for
@@ -143,14 +143,18 @@ pub struct DiceArtifacts {
 #[derive(Clone)]
 pub struct AuthorizedClient {
     /// Client id
-    pub client_id: ClientId,
+    pub client_id: Arc<ClientId>,
     /// Unique sequence number assigned to the client by the AuthMgr BE
     pub sequence_number: i32,
     /// DICE policy of the client
-    pub policy: Policy,
-    /// A list of services that the client has connected to, which need to be notified upon client
-    /// deletion.
-    pub connected_services: Vec<String>,
+    pub policy: Arc<Policy>,
+}
+
+impl AuthorizedClient {
+    /// Update the client's policy with the given policy
+    pub fn update_policy(&mut self, updated_policy: &Arc<Policy>) {
+        self.policy = Arc::clone(updated_policy);
+    }
 }
 
 /// Information of a persistent pvm instance stored in the persistent secure storage.
@@ -162,7 +166,7 @@ pub struct PersistentInstanceContext {
     /// Unique sequence number of the persistent instance
     pub sequence_number: i32,
     /// DICE policy
-    pub dice_policy: Policy,
+    pub dice_policy: Arc<Policy>,
 }
 
 /// Information of a persistent client stored in the persistent secure storage.
@@ -173,7 +177,7 @@ pub struct PersistentClientContext {
     /// Unique sequence number of the persistent client
     pub sequence_number: i32,
     /// DICE policy
-    pub dice_policy: Policy,
+    pub dice_policy: Arc<Policy>,
 }
 
 /// Encapsulates information about a pVM instance which has completed step 1 of phase 1 of the
@@ -372,6 +376,16 @@ impl PendingClientAuthorizationsPerPvm {
                 self.transport_id
             ));
         }
+        if self
+            .pending_clients
+            .iter()
+            .any(|client| client.token == pending_client_authorization.token)
+        {
+            return Err(am_err!(
+                InternalError,
+                "a pending client authorzation with the given tokan already exists"
+            ));
+        }
         self.pending_clients.push(pending_client_authorization);
         Ok(())
     }
@@ -466,7 +480,7 @@ pub struct AuthorizedClientFullDiceArtifacts {
     /// connection close by the pvm)
     pub transport_id: TransportID,
     /// Client's id (used to cleanup the cache upon client deletion)
-    pub client_id: ClientId,
+    pub client_id: Arc<ClientId>,
     /// Complete DICE artifacts of the client
     pub full_dice_artifacts: DiceArtifacts,
 }
@@ -530,7 +544,7 @@ impl AuthorizedClientsGlobalList {
     /// Remove an entry given the client id
     pub fn remove_via_client_id(&mut self, client_id: &ClientId) {
         self.authorized_clients_list
-            .retain(|authorized_clients| authorized_clients.client_id == *client_id);
+            .retain(|authorized_clients| *authorized_clients.client_id == *client_id);
     }
 }
 
