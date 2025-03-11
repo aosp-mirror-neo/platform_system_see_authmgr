@@ -128,7 +128,7 @@ pub trait RawConnection: Send {
     /// this `RawConnection` trait.
     ///
     /// Note that as per the Rust I/O safety guidelines:
-    /// (https://doc.rust-lang.org/stable/std/io/index.html#io-safety) it is unsound to take an
+    /// (<https://doc.rust-lang.org/stable/std/io/index.html#io-safety>) it is unsound to take an
     /// integer and treat it as a file descriptor. We refrain from using an `OwnedFd` here to
     /// preserve the no_std property of this crate. Therefore, the implementations should make sure
     /// that an object of this trait owns the file descriptor underlying the connection.
