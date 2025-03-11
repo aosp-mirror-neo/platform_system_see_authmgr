@@ -194,13 +194,13 @@ pub struct RawConnectionInfo {
     /// Transport ID (a.k.a VM ID)
     transport_id: TransportID,
     /// Raw file descriptor corresponding to this connection.
-    raw_fd_id: i32,
+    raw_fd: i32,
 }
 
 impl RawConnectionInfo {
     /// Constructor
-    pub fn new(transport_id: TransportID, raw_fd_id: i32) -> Self {
-        Self { transport_id, raw_fd_id }
+    pub fn new(transport_id: TransportID, raw_fd: i32) -> Self {
+        Self { transport_id, raw_fd }
     }
 }
 
@@ -210,18 +210,14 @@ impl RawConnection for RawConnectionInfo {
         Ok(self.transport_id)
     }
 
-    /// Close the handle to this connection, while keeping the underlying connection is still open.
-    fn close_handle(&mut self) -> Result<(), Error> {
-        // This does not need to be implemented for the mock implementation
-        Ok(())
-    }
-
     /// Return the raw file descriptor id of the underlying connection. This method is not called by
     /// the authmgr backend core library. Rather, this is added for use of the vendor
     /// implementations which pass in an implementation of `RawConnection` trait into this library
     /// and then retrieve it back in their implementations.
-    fn get_raw_fd_id(&self) -> i32 {
-        self.raw_fd_id
+    fn into_raw_fd(self: Box<Self>) -> i32 {
+        // Note: in the actual implementation, we need to make sure that the object is not destoyed
+        // at the end of this method
+        self.raw_fd
     }
 }
 
