@@ -28,3 +28,22 @@ rust_library {
         "libauthmgr_common",
     ],
 }
+
+rust_test {
+    name: "libauthmgr_be_unit_test",
+    crate_name: "authmgr_be_unit_test",
+    srcs: ["src/lib.rs"],
+    host_supported: true,
+    test_suites: ["general-tests"],
+    rustlibs: [
+        "libauthgraph_boringssl",
+        "libauthgraph_core",
+        "libauthgraph_core_test",
+        "libauthmgr_be",
+        "libauthmgr_be_test",
+        "libauthmgr_common",
+        "libauthmgr_common_util",
+        "libcoset",
+        "libdice_policy_builder",
+    ],
+}

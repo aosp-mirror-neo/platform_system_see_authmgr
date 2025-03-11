@@ -29,3 +29,19 @@ rust_library {
         "liblog_rust",
     ],
 }
+
+rust_library {
+    name: "libauthmgr_be_test",
+    crate_name: "authmgr_be_test",
+    srcs: ["src/tests.rs"],
+    host_supported: true,
+    rustlibs: [
+        "libauthgraph_core",
+        "libauthmgr_common",
+        "libauthmgr_common_util",
+        "libauthmgr_be",
+        "libcoset",
+        "libdice_policy_builder",
+        "liblog_rust",
+    ],
+}
