@@ -254,7 +254,7 @@ impl AuthStartedPvms {
     /// Remove an entry via its transport id - this is used to remove an entry when only the
     /// transport id is available - e.g. upon connection close.
     pub fn remove_via_transport_id(&mut self, transport_id: TransportID) {
-        self.auth_started_pvms.retain(|entry| entry.transport_id == transport_id);
+        self.auth_started_pvms.retain(|entry| entry.transport_id != transport_id);
     }
 
     /// Remove all entries with a given instance id - this is used to remove all entries with
@@ -321,7 +321,7 @@ impl AuthenticatedPvms {
 
     /// Remove a pvm instance via its transport id (upon connection close)
     pub fn remove_via_transport_id(&mut self, transport_id: TransportID) {
-        self.authenticated_pvms.retain(|entry| entry.transport_id == transport_id);
+        self.authenticated_pvms.retain(|entry| entry.transport_id != transport_id);
     }
 }
 
@@ -467,7 +467,7 @@ impl PendingClientAuthorizations {
     /// Remove all the connections identified by the transport id
     pub fn remove_via_transport_id(&mut self, transport_id: TransportID) {
         self.pending_clients_by_pvm
-            .retain(|pending_clients_per_pvm| pending_clients_per_pvm.transport_id == transport_id);
+            .retain(|pending_clients_per_pvm| pending_clients_per_pvm.transport_id != transport_id);
     }
 }
 
@@ -538,7 +538,7 @@ impl AuthorizedClientsGlobalList {
     /// Remove all entries given a transport id
     pub fn remove_via_transport_id(&mut self, transport_id: TransportID) {
         self.authorized_clients_list
-            .retain(|authorized_clients| authorized_clients.transport_id == transport_id);
+            .retain(|authorized_clients| authorized_clients.transport_id != transport_id);
     }
 
     /// Remove an entry given the client id
