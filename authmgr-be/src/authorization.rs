@@ -21,18 +21,22 @@ use crate::{
     am_err,
     data_structures::{
         AuthStartedPvm, AuthStartedPvms, AuthenticatedConnectionState, AuthenticatedPvms,
-        AuthorizedClientsGlobalList, DiceArtifacts, MemoryLimits, PendingClientAuthorizations,
-        PersistentInstanceContext, VERSION_PERSISTENT_INSTANCE_CONTEXT,
+        AuthorizedClient, AuthorizedClientFullDiceArtifacts, AuthorizedClientsGlobalList, ClientId,
+        DiceArtifacts, MemoryLimits, PendingClientAuthorization, PendingClientAuthorizations,
+        PersistentClientContext, PersistentInstanceContext, VERSION_PERSISTENT_CLIENT_CONTEXT,
+        VERSION_PERSISTENT_INSTANCE_CONTEXT,
     },
     error::{Error, ErrorCode},
-    traits::{CryptoTraitImpl, Device, PersistentStorage, RpcConnection},
+    traits::{CryptoTraitImpl, Device, PersistentStorage, RawConnection, RpcConnection},
+    try_to_vec,
 };
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use authgraph_core::key::{CertChain, InstanceIdentifier, Policy};
+use authgraph_core::key::{CertChain, DiceChainEntry, InstanceIdentifier, Policy};
 use authmgr_common::{
-    match_dice_chain_with_policy,
+    extend_dice_policy_with, match_dice_cert_with_policy, match_dice_chain_with_policy,
     signed_connection_request::{Challenge, ConnectionRequest},
+    Token,
 };
 use coset::CborSerializable;
 
@@ -234,10 +238,10 @@ impl AuthMgrBE {
                 )
             })?;
 
-        let given_dice_policy = Policy(dice_policy.to_vec());
+        let given_dice_policy = Arc::new(Policy(try_to_vec(dice_policy)?));
         let is_persistent = self.device.is_persistent_instance(&auth_started_entry.instance_id)?;
         let instance_seq_number = if is_persistent {
-            self.handle_rollback_protection_for_persistent_instance(
+            self.handle_instance_in_persistent_storage(
                 &auth_started_entry.instance_id,
                 &given_dice_policy,
                 &auth_started_entry.cert_chain,
@@ -265,12 +269,154 @@ impl AuthMgrBE {
         Ok(())
     }
 
+    /// Step 1 of phase 2
+    /// A new connection should be used for client authorization. The AuthMgr-BE TA implementation
+    /// should make sure that it fails gracefully, if a connection that is already used for instance
+    /// authentication is attempted to be used for client authorization.
+    pub fn init_connection_for_client(
+        &mut self,
+        client_connection: Box<dyn RawConnection>,
+        token: Token,
+    ) -> Result<(), Error> {
+        // Check if this request comes from a pVM which has an AuthMgr FE that is already
+        // authenticated with the AuthMgr BE.
+        let client_transport_id = client_connection.get_peer_transport_id()?;
+        if !self.auth_completed_pvms.has_transport_id(client_transport_id) {
+            return Err(am_err!(
+                InstanceNotAuthenticated,
+                "the transport id is not associated with a pVM that has an
+                  authenticated AuthMgr FE."
+            ));
+        }
+
+        // Add the connection and the token to the pending client authorization list.
+        self.pending_client_authorizations
+            .insert(client_transport_id, PendingClientAuthorization { token, client_connection })?;
+        Ok(())
+    }
+
+    /// Step 2 of phase 2
+    pub fn authorize_and_connect_client_to_trusted_service(
+        &mut self,
+        connection: &mut dyn RpcConnection,
+        client_id: &[u8],
+        service_name: &str,
+        token: Token,
+        client_dice_cert: &[u8],
+        client_dice_policy: &[u8],
+    ) -> Result<(), Error> {
+        // Check whether the connection is already authenticated.
+        let state = connection.get_mutable_authenticated_state()?.ok_or(am_err!(
+            ConnectionNotAuthenticated,
+            "phase 2 of the AuthMgr protocol can only be invoked on an authenticated connection."
+        ))?;
+        // Retrieve the new connection corresponding to this request from pending authorizations
+        let pending_authorization =
+            self.pending_client_authorizations.take(state.transport_id, token).ok_or(am_err!(
+                NoConnectionToAuthorize,
+                "no pending authorization found for the transport id: {:?} and token: {:?}",
+                state.transport_id,
+                token
+            ))?;
+
+        let client_id = Arc::new(ClientId(try_to_vec(client_id)?));
+        let given_policy = Arc::new(Policy(try_to_vec(client_dice_policy)?));
+        let given_dice_cert = DiceChainEntry::from_slice(client_dice_cert)?;
+        let is_persistent = state.is_persistent;
+        let instance_seq_number = state.instance_seq_number;
+        // In what follows, we do the following:
+        // 1. Read from the cache to see if this client is already authorized in the current boot
+        //    cycle of the pVM instance. If the client is in the cache, enforce rollback protection
+        //    for the client in the cache. This includes running the dice chain to policy matching
+        //    checks and if they are successful, updating both the storage and the cache if the
+        //    policy has been updated.
+        // 2. If the client is not in the cache, read the client context from the storage.
+        //    a) If the client context is in the storage, enforce rollback protection for the client
+        //       in the storage.
+        //    b) If the client is not in the stroge, create the instance context in the storage.
+        //    c) Insert the client into the cache.
+        let mut authorized_client = state.get_mutable_authorized_client(&client_id);
+        let (client_seq_number, policy_need_update) = match authorized_client {
+            Some(ref mut client) => {
+                let client_seq_number = client.sequence_number;
+                let policy_need_update = !(given_policy == client.policy);
+                self.enforce_rollback_protection_for_client_in_cache(
+                    instance_seq_number,
+                    is_persistent,
+                    client,
+                    &given_dice_cert,
+                    &given_policy,
+                )?;
+                (client_seq_number, policy_need_update)
+            }
+            None => {
+                // If not, read from the storage
+                let client_seq_number = if is_persistent {
+                    self.handle_client_in_persistent_storage(
+                        instance_seq_number,
+                        &client_id,
+                        &given_dice_cert,
+                        &given_policy,
+                    )?
+                } else {
+                    // TODO: b/399707150
+                    return Err(am_err!(
+                        Unimplemented,
+                        "Non persistent instances are not yet supported."
+                    ));
+                };
+                // Insert into the cache
+                state.insert_authorized_client(AuthorizedClient {
+                    client_id: Arc::clone(&client_id),
+                    sequence_number: client_seq_number,
+                    policy: Arc::clone(&given_policy),
+                })?;
+                (client_seq_number, false)
+            }
+        };
+        // Update the cache containing the global list of authorized clients with their full DICE
+        // artifacts to be used by the "policy matching as a service" offered by AuthMgr-BE
+        self.update_global_list_of_authorized_clients(
+            state,
+            client_seq_number,
+            &client_id,
+            &given_dice_cert,
+            &given_policy,
+            policy_need_update,
+        )?;
+        // Handover the authorized client to the requested trusted service
+        // TODO: Upon successful handover, update the connected services for the client in the cache
+        // and the storage, if needed
+        self.device.handover_client_connection(
+            service_name,
+            client_seq_number,
+            pending_authorization.client_connection,
+            is_persistent,
+        )
+    }
+
+    /// This should be called by the TEE environment upon closing of every connection established
+    /// between AuthMgr FE and AuthMgr BE "for the purpose of authenticating AuthMgr FE
+    /// to AuthMgr BE" - i.e. the connections established in phase 1, in order to clear the cache.
+    pub fn clear_cache_upon_main_connection_close(
+        &mut self,
+        connection: &mut dyn RpcConnection,
+    ) -> Result<(), Error> {
+        let transport_id = connection.get_peer_transport_id()?;
+        self.auth_started_pvms.remove_via_transport_id(transport_id);
+        self.auth_completed_pvms.remove_via_transport_id(transport_id);
+        self.pending_client_authorizations.remove_via_transport_id(transport_id);
+        self.authorized_clients.remove_via_transport_id(transport_id);
+        connection.remove_authenticated_state()?;
+        Ok(())
+    }
+
     // A helper method for creating/updating the instance context in the secure storage and
     // enforcing rollback protection for a persistent pvm.
-    fn handle_rollback_protection_for_persistent_instance(
+    fn handle_instance_in_persistent_storage(
         &mut self,
-        instance_id: &InstanceIdentifier,
-        given_policy: &Policy,
+        instance_id: &Arc<InstanceIdentifier>,
+        given_policy: &Arc<Policy>,
         dice_chain: &CertChain,
     ) -> Result<i32, Error> {
         match self.persistent_storage.read_instance_context(instance_id)? {
@@ -285,6 +431,12 @@ impl AuthMgrBE {
                 Ok(instance_ctx.sequence_number)
             }
             None => {
+                if !match_dice_chain_with_policy(dice_chain, given_policy)? {
+                    return Err(am_err!(
+                        DicePolicyMatchingFailed,
+                        "the DICE chain doesn't match the given DICE policy."
+                    ));
+                }
                 if !self.device.is_persistent_instance_creation_allowed(instance_id, dice_chain)? {
                     return Err(am_err!(
                         InstanceContextCreationDenied,
@@ -299,7 +451,7 @@ impl AuthMgrBE {
                     PersistentInstanceContext {
                         version: VERSION_PERSISTENT_INSTANCE_CONTEXT,
                         sequence_number,
-                        dice_policy: given_policy.clone(),
+                        dice_policy: Arc::clone(given_policy),
                     },
                 )?;
                 Ok(sequence_number)
@@ -310,8 +462,8 @@ impl AuthMgrBE {
     // A helper function for enforcing rollback protection on a pvm instance.
     fn enforce_rollback_protection_for_pvm(
         &mut self,
-        instance_id: &InstanceIdentifier,
-        given_policy: &Policy,
+        instance_id: &Arc<InstanceIdentifier>,
+        given_policy: &Arc<Policy>,
         stored_policy: &Policy,
         dice_chain: &CertChain,
         is_persistent: bool,
@@ -323,7 +475,7 @@ impl AuthMgrBE {
                 "the DICE chain doesn't match the given DICE policy."
             ));
         }
-        if stored_policy != given_policy {
+        if *stored_policy != **given_policy {
             if !match_dice_chain_with_policy(dice_chain, stored_policy)? {
                 return Err(am_err!(
                     DicePolicyMatchingFailed,
@@ -339,6 +491,166 @@ impl AuthMgrBE {
                     Unimplemented,
                     "Non persistent instances are not yet supported."
                 ));
+            }
+        }
+        Ok(())
+    }
+
+    // A helper method to enforce rollback protection for a client already in the cache.
+    fn enforce_rollback_protection_for_client_in_cache(
+        &mut self,
+        instance_seq_number: i32,
+        is_persistent: bool,
+        authorized_client: &mut AuthorizedClient,
+        given_dice_cert: &DiceChainEntry,
+        given_policy: &Arc<Policy>,
+    ) -> Result<(), Error> {
+        self.enforce_rollback_protection_for_client(
+            instance_seq_number,
+            &authorized_client.client_id,
+            given_dice_cert,
+            given_policy,
+            &authorized_client.policy,
+            is_persistent,
+        )?;
+        if *authorized_client.policy != **given_policy {
+            // Update the policy in the cache as well
+            authorized_client.update_policy(given_policy);
+        }
+        Ok(())
+    }
+
+    fn handle_client_in_persistent_storage(
+        &mut self,
+        instance_seq_number: i32,
+        client_id: &Arc<ClientId>,
+        given_dice_cert: &DiceChainEntry,
+        given_policy: &Arc<Policy>,
+    ) -> Result<i32, Error> {
+        match self.persistent_storage.read_client_context(instance_seq_number, client_id)? {
+            Some(client_ctx) => {
+                self.enforce_rollback_protection_for_client(
+                    instance_seq_number,
+                    client_id,
+                    given_dice_cert,
+                    given_policy,
+                    &client_ctx.dice_policy,
+                    true,
+                )?;
+                Ok(client_ctx.sequence_number)
+            }
+            None => {
+                if !match_dice_cert_with_policy(given_dice_cert, given_policy)? {
+                    return Err(am_err!(
+                        DicePolicyMatchingFailed,
+                        "the client's DICE leaf certificate doesn't match the given DICE policy"
+                    ));
+                }
+                let sequence_number = self
+                    .latest_global_sequence_number
+                    .fetch_and_increment(&mut *self.persistent_storage)?;
+                self.persistent_storage.create_client_context(
+                    instance_seq_number,
+                    client_id,
+                    PersistentClientContext {
+                        version: VERSION_PERSISTENT_CLIENT_CONTEXT,
+                        sequence_number,
+                        dice_policy: Arc::clone(given_policy),
+                    },
+                )?;
+                Ok(sequence_number)
+            }
+        }
+    }
+
+    fn enforce_rollback_protection_for_client(
+        &mut self,
+        instance_seq_number: i32,
+        client_id: &Arc<ClientId>,
+        given_dice_cert: &DiceChainEntry,
+        given_policy: &Arc<Policy>,
+        stored_policy: &Policy,
+        is_persistent: bool,
+    ) -> Result<(), Error> {
+        // First, match the given policy and the DICE certificate
+        if !match_dice_cert_with_policy(given_dice_cert, given_policy)? {
+            return Err(am_err!(
+                DicePolicyMatchingFailed,
+                "the client's DICE leaf certificate doesn't match the given DICE policy"
+            ));
+        }
+        if **given_policy != *stored_policy {
+            if !match_dice_cert_with_policy(given_dice_cert, stored_policy)? {
+                return Err(am_err!(
+                    DicePolicyMatchingFailed,
+                    "the client's DICE leaf certificate doesn't match the stored DICE policy"
+                ));
+            }
+            // Update the policy in the storage
+            if is_persistent {
+                self.persistent_storage.update_client_policy_in_storage(
+                    instance_seq_number,
+                    client_id,
+                    given_policy,
+                )?;
+            } else {
+                // TODO: b/399707150
+                return Err(am_err!(
+                    Unimplemented,
+                    "Non persistent instances are not yet supported."
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    // We need to update the cache containing the global list of authorized clients with
+    // their full DICE artifacts to be used in the service exposed by the AuthMgr BE to the
+    // trusted services for matching DICE chain and DICE policies of the clients.
+    fn update_global_list_of_authorized_clients(
+        &mut self,
+        state: &AuthenticatedConnectionState,
+        client_seq_number: i32,
+        client_id: &Arc<ClientId>,
+        dice_leaf: &DiceChainEntry,
+        given_policy: &Arc<Policy>,
+        policy_need_update: bool,
+    ) -> Result<(), Error> {
+        match self.authorized_clients.get_mut(client_seq_number) {
+            Some(ref mut authorized_client) => {
+                if !authorized_client.full_dice_artifacts.cert_chain.is_current_leaf(dice_leaf) {
+                    // This state is possible only if the client's DICE cert can change in runtime
+                    // e.g. (loadable TAs)
+                    let updated_full_dice_chain = (*state.dice_artifacts.cert_chain)
+                        .extend_with(dice_leaf, &*self.crypto.ecdsa)?;
+                    authorized_client.full_dice_artifacts.cert_chain =
+                        Arc::new(updated_full_dice_chain);
+                }
+
+                if policy_need_update {
+                    authorized_client.full_dice_artifacts.policy = Arc::new(
+                        extend_dice_policy_with(&state.dice_artifacts.policy, given_policy)?,
+                    );
+                }
+            }
+            None => {
+                let client_full_dice_artifacts = DiceArtifacts {
+                    cert_chain: Arc::new(
+                        (*state.dice_artifacts.cert_chain)
+                            .extend_with(dice_leaf, &*self.crypto.ecdsa)?,
+                    ),
+                    policy: Arc::new(extend_dice_policy_with(
+                        &state.dice_artifacts.policy,
+                        given_policy,
+                    )?),
+                };
+
+                self.authorized_clients.insert(AuthorizedClientFullDiceArtifacts {
+                    sequence_number: client_seq_number,
+                    transport_id: state.transport_id,
+                    client_id: Arc::clone(client_id),
+                    full_dice_artifacts: client_full_dice_artifacts,
+                })?;
             }
         }
         Ok(())
