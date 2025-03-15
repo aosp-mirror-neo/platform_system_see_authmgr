@@ -28,3 +28,9 @@ license {
 }
 
 subdirs = ["*"]
+
+dirgroup {
+    name: "trusty_dirgroup_system_see_authmgr",
+    dirs: ["."],
+    visibility: ["//trusty/vendor/google/aosp/scripts"],
+}
