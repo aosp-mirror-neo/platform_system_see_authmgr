@@ -20,6 +20,7 @@ use crate::data_structures::{
 };
 use crate::error::Error;
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use authgraph_core::key::{CertChain, InstanceIdentifier, Policy};
 use authgraph_core::traits::{EcDsa, Rng};
 use authmgr_common::signed_connection_request::TransportID;
@@ -48,6 +49,14 @@ pub trait Device: Send {
 
     /// Connect to the trusted service identified by `service_name` and hand over the client
     /// connection along with the client's unique sequence number.
+    /// The client connection is an object of the trait implementation: `RawConnection`. At the end
+    /// of this method, the vendor implementation must close the handle to the file descriptor
+    /// underlying this connection such that:
+    /// 1) if the `handover_client_connection` is successful, the underlying file description
+    ///    should be kept open for the client and the trusted service to be able to communicate.
+    /// 2) if the `handover_client_connection` failed, then this is the last handle to the file
+    ///    description underlying this connection from the AuthMgr BE side, and therefore, closing
+    ///    the handle to it should close the underlying file description.
     fn handover_client_connection(
         &self,
         service_name: &str,
@@ -63,9 +72,6 @@ pub trait Device: Send {
         instance_id: &InstanceIdentifier,
         dice_chain: &CertChain,
     ) -> Result<bool, Error>;
-
-    /// Check whether a particular service requires to be notified upon deletion of a client.
-    fn needs_notification_upon_client_deletion(&self, service_name: &str) -> Result<bool, Error>;
 }
 
 /// Trait defining RPC connection specific functionality required by AuthMgr BE
@@ -111,30 +117,23 @@ pub trait RawConnection: Send {
     /// Return the transport ID of the instance that is on the other end of the connection
     fn get_peer_transport_id(&self) -> Result<TransportID, Error>;
 
-    /// Close the handle to this connection, while keeping the underlying connection is still open.
-    /// At the end of `handover_client_connection`, the AuthMgrBE calls this method to remind the
-    /// vendor code to close its handle to the file descriptor underlying this connection s.t.:
-    /// 1) if the `handover_client_connection` is successful, the underlying file description
-    ///    should be kept open for the client and the trusted service to be able to communicate.
-    /// 2) if the `handover_client_connection` failed, then this is the last handle to the file
-    ///    description underlying this connection from the AuthMgr BE side, and therefore, closing
-    ///    the handle to it should close the underlying file description.
-    ///
-    ///  If the aforementioned behavior is already taken care of in the implementation of
-    /// `handover_client_connection` trait method, this method can simply return Ok(()).
-    fn close_handle(&mut self) -> Result<(), Error>;
-
     /// Return the raw file descriptor id of the underlying connection. This method is not called by
     /// the authmgr backend core library. Rather, this is added for use of the vendor
     /// implementations of `handover_client_connection` which is passed in an implementation of
     /// this `RawConnection` trait.
     ///
     /// Note that as per the Rust I/O safety guidelines:
-    /// (https://doc.rust-lang.org/stable/std/io/index.html#io-safety) it is unsound to take an
+    /// (<https://doc.rust-lang.org/stable/std/io/index.html#io-safety>) it is unsound to take an
     /// integer and treat it as a file descriptor. We refrain from using an `OwnedFd` here to
     /// preserve the no_std property of this crate. Therefore, the implementations should make sure
     /// that an object of this trait owns the file descriptor underlying the connection.
-    fn get_raw_fd_id(&self) -> i32;
+    ///
+    /// Also note that we transfer the ownership of the object into this function to make sure this
+    /// method cannot be called twice on the same object. Therefore, the implementation of this
+    /// method should make sure that the object's destructor doesn't get called at the end of this
+    /// method, in order to make sure that the underlying connection stays alive for the client and
+    /// the trusted service to communicate.
+    fn into_raw_fd(self: Box<Self>) -> i32;
 }
 
 /// Following traits define the storage related functionality for AuthMgr BE. The AuthMgr BE
@@ -177,16 +176,16 @@ pub trait Storage: Send {
     /// Use this method to update the instance's DICE policy in the secure storage.
     fn update_instance_policy_in_storage(
         &mut self,
-        instance_id: &InstanceIdentifier,
-        latest_dice_policy: &Policy,
+        instance_id: &Arc<InstanceIdentifier>,
+        latest_dice_policy: &Arc<Policy>,
     ) -> Result<(), Error>;
 
     /// Use this method to update the client's DICE policy.
     fn update_client_policy_in_storage(
         &mut self,
         instance_seq_number: i32,
-        client_id: &ClientId,
-        latest_dice_policy: &Policy,
+        client_id: &Arc<ClientId>,
+        latest_dice_policy: &Arc<Policy>,
     ) -> Result<(), Error>;
 
     /// Retrieve the information stored in the secure storage for the instance identified by the
@@ -194,7 +193,7 @@ pub trait Storage: Send {
     /// otherwise, return None.
     fn read_instance_context(
         &self,
-        instance_id: &InstanceIdentifier,
+        instance_id: &Arc<InstanceIdentifier>,
     ) -> Result<Option<Self::InstanceContext>, Error>;
 
     /// Create the context for a particular pvm instance in the secure storage. The implementation
@@ -202,7 +201,7 @@ pub trait Storage: Send {
     /// This is important to enforce Trust On First Use (TOFU).
     fn create_instance_context(
         &mut self,
-        instance_id: &InstanceIdentifier,
+        instance_id: &Arc<InstanceIdentifier>,
         instance_info: Self::InstanceContext,
     ) -> Result<(), Error>;
 
@@ -212,7 +211,7 @@ pub trait Storage: Send {
     fn read_client_context(
         &self,
         instance_seq_number: i32,
-        client_id: &ClientId,
+        client_id: &Arc<ClientId>,
     ) -> Result<Option<Self::ClientContext>, Error>;
 
     /// Initialize the secure storage for a particular client. The implementation of this method
@@ -221,7 +220,7 @@ pub trait Storage: Send {
     fn create_client_context(
         &mut self,
         instance_seq_number: i32,
-        client_id: &ClientId,
+        client_id: &Arc<ClientId>,
         client_info: Self::ClientContext,
     ) -> Result<(), Error>;
 }
