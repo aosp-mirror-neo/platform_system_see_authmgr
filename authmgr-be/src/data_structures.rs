@@ -22,7 +22,8 @@ use crate::{
 };
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
-use alloc::{string::String, vec::Vec};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use authgraph_core::key::{CertChain, EcVerifyKey, InstanceIdentifier, Policy};
 use authmgr_common::{
     signed_connection_request::{Challenge, TransportID},
@@ -34,10 +35,6 @@ use log::warn;
 pub const VERSION_PERSISTENT_INSTANCE_CONTEXT: i32 = 1;
 /// Version of the data structure format used to store details of a persistent client
 pub const VERSION_PERSISTENT_CLIENT_CONTEXT: i32 = 1;
-/// Version of the data structure format used to store details of a non persistent instance
-pub const VERSION_NON_PERSISTENT_INSTANCE_CONTEXT: i32 = 1;
-/// Version of the data structure format used to store details of a non persistent client
-pub const VERSION_NON_PERSISTENT_CLIENT_CONTEXT: i32 = 1;
 
 /// Default value for maximum number of entries in the cache for authentication started pVMs
 pub const MAX_SIZE_AUTH_STARTED_PVMS: usize = 6;
@@ -56,7 +53,7 @@ pub struct ClientId(pub Vec<u8>);
 /// clients in the pVM
 pub struct AuthenticatedConnectionState {
     /// Instance id of the pvm
-    pub instance_id: InstanceIdentifier,
+    pub instance_id: Arc<InstanceIdentifier>,
     /// Transport id of the pvm
     pub transport_id: TransportID,
     /// Unique sequence number assigned to the instance by the AuthMgr BE
@@ -76,7 +73,7 @@ pub struct AuthenticatedConnectionState {
 impl AuthenticatedConnectionState {
     /// Populate the information to be stored in-memory in the connection state
     pub fn new(
-        instance_id: InstanceIdentifier,
+        instance_id: Arc<InstanceIdentifier>,
         transport_id: TransportID,
         instance_seq_number: i32,
         dice_artifacts: DiceArtifacts,
@@ -103,7 +100,7 @@ impl AuthenticatedConnectionState {
         &mut self,
         client_id: &ClientId,
     ) -> Option<&mut AuthorizedClient> {
-        self.authorized_clients.iter_mut().find(|client| client.client_id == *client_id)
+        self.authorized_clients.iter_mut().find(|client| *client.client_id == *client_id)
     }
 
     /// Insert the authorized client into into the cache
@@ -136,9 +133,9 @@ impl AuthenticatedConnectionState {
 #[derive(Clone)]
 pub struct DiceArtifacts {
     /// DICE certificate chain
-    pub cert_chain: CertChain,
+    pub cert_chain: Arc<CertChain>,
     /// DICE poicy
-    pub policy: Policy,
+    pub policy: Arc<Policy>,
 }
 
 /// Information associated with an authorized client. This information is used to check for
@@ -146,14 +143,18 @@ pub struct DiceArtifacts {
 #[derive(Clone)]
 pub struct AuthorizedClient {
     /// Client id
-    pub client_id: ClientId,
+    pub client_id: Arc<ClientId>,
     /// Unique sequence number assigned to the client by the AuthMgr BE
     pub sequence_number: i32,
     /// DICE policy of the client
-    pub policy: Policy,
-    /// A list of services that the client has connected to, which need to be notified upon client
-    /// deletion.
-    pub connected_services: Vec<String>,
+    pub policy: Arc<Policy>,
+}
+
+impl AuthorizedClient {
+    /// Update the client's policy with the given policy
+    pub fn update_policy(&mut self, updated_policy: &Arc<Policy>) {
+        self.policy = Arc::clone(updated_policy);
+    }
 }
 
 /// Information of a persistent pvm instance stored in the persistent secure storage.
@@ -165,7 +166,7 @@ pub struct PersistentInstanceContext {
     /// Unique sequence number of the persistent instance
     pub sequence_number: i32,
     /// DICE policy
-    pub dice_policy: Policy,
+    pub dice_policy: Arc<Policy>,
 }
 
 /// Information of a persistent client stored in the persistent secure storage.
@@ -176,7 +177,7 @@ pub struct PersistentClientContext {
     /// Unique sequence number of the persistent client
     pub sequence_number: i32,
     /// DICE policy
-    pub dice_policy: Policy,
+    pub dice_policy: Arc<Policy>,
 }
 
 /// Encapsulates information about a pVM instance which has completed step 1 of phase 1 of the
@@ -186,11 +187,11 @@ pub struct AuthStartedPvm {
     /// Transport id of the pvm (a.k.a. VM ID)
     pub transport_id: TransportID,
     /// Instance id of the pvm
-    pub instance_id: InstanceIdentifier,
+    pub instance_id: Arc<InstanceIdentifier>,
     /// Challenge issued by the AuthMgr BE to this pvm
     pub challenge: Challenge,
     /// Certificate chain of the pvm
-    pub cert_chain: CertChain,
+    pub cert_chain: Arc<CertChain>,
 }
 
 impl AuthStartedPvm {
@@ -253,13 +254,13 @@ impl AuthStartedPvms {
     /// Remove an entry via its transport id - this is used to remove an entry when only the
     /// transport id is available - e.g. upon connection close.
     pub fn remove_via_transport_id(&mut self, transport_id: TransportID) {
-        self.auth_started_pvms.retain(|entry| entry.transport_id == transport_id);
+        self.auth_started_pvms.retain(|entry| entry.transport_id != transport_id);
     }
 
     /// Remove all entries with a given instance id - this is used to remove all entries with
     /// an authenticated instance id.
     pub fn remove_via_instance_id(&mut self, instance_id: &InstanceIdentifier) {
-        self.auth_started_pvms.retain(|entry| &entry.instance_id != instance_id);
+        self.auth_started_pvms.retain(|entry| &*entry.instance_id != instance_id);
     }
 }
 
@@ -268,7 +269,7 @@ impl AuthStartedPvms {
 #[derive(PartialEq)]
 pub struct AuthenticatedPvm {
     /// Instance id of the pvm
-    pub instance_id: InstanceIdentifier,
+    pub instance_id: Arc<InstanceIdentifier>,
     /// Transport id of the pvm
     pub transport_id: TransportID,
 }
@@ -298,7 +299,7 @@ impl AuthenticatedPvms {
             ));
         }
         let authenticated_pvm = AuthenticatedPvm {
-            instance_id: auth_started_pvm.instance_id.clone(),
+            instance_id: Arc::clone(&auth_started_pvm.instance_id),
             transport_id: auth_started_pvm.transport_id,
         };
         self.authenticated_pvms.push(authenticated_pvm);
@@ -308,7 +309,7 @@ impl AuthenticatedPvms {
     /// Check if a pvm with a given instance id already exists in the list - this is used to prevent
     /// duplicated authentication attempts
     pub fn has_instance_id(&self, instance_id: &InstanceIdentifier) -> bool {
-        self.authenticated_pvms.iter().any(|entry| &entry.instance_id == instance_id)
+        self.authenticated_pvms.iter().any(|entry| &*entry.instance_id == instance_id)
     }
 
     /// Check if a pvm with a given transport id already exists in the list - this is used to
@@ -320,7 +321,7 @@ impl AuthenticatedPvms {
 
     /// Remove a pvm instance via its transport id (upon connection close)
     pub fn remove_via_transport_id(&mut self, transport_id: TransportID) {
-        self.authenticated_pvms.retain(|entry| entry.transport_id == transport_id);
+        self.authenticated_pvms.retain(|entry| entry.transport_id != transport_id);
     }
 }
 
@@ -373,6 +374,16 @@ impl PendingClientAuthorizationsPerPvm {
                 "Maximum capacity reached for the pending authorizations for the pVM with the
                  transport id: {:?}.",
                 self.transport_id
+            ));
+        }
+        if self
+            .pending_clients
+            .iter()
+            .any(|client| client.token == pending_client_authorization.token)
+        {
+            return Err(am_err!(
+                InternalError,
+                "a pending client authorzation with the given tokan already exists"
             ));
         }
         self.pending_clients.push(pending_client_authorization);
@@ -456,7 +467,7 @@ impl PendingClientAuthorizations {
     /// Remove all the connections identified by the transport id
     pub fn remove_via_transport_id(&mut self, transport_id: TransportID) {
         self.pending_clients_by_pvm
-            .retain(|pending_clients_per_pvm| pending_clients_per_pvm.transport_id == transport_id);
+            .retain(|pending_clients_per_pvm| pending_clients_per_pvm.transport_id != transport_id);
     }
 }
 
@@ -469,7 +480,7 @@ pub struct AuthorizedClientFullDiceArtifacts {
     /// connection close by the pvm)
     pub transport_id: TransportID,
     /// Client's id (used to cleanup the cache upon client deletion)
-    pub client_id: ClientId,
+    pub client_id: Arc<ClientId>,
     /// Complete DICE artifacts of the client
     pub full_dice_artifacts: DiceArtifacts,
 }
@@ -527,13 +538,13 @@ impl AuthorizedClientsGlobalList {
     /// Remove all entries given a transport id
     pub fn remove_via_transport_id(&mut self, transport_id: TransportID) {
         self.authorized_clients_list
-            .retain(|authorized_clients| authorized_clients.transport_id == transport_id);
+            .retain(|authorized_clients| authorized_clients.transport_id != transport_id);
     }
 
     /// Remove an entry given the client id
     pub fn remove_via_client_id(&mut self, client_id: &ClientId) {
         self.authorized_clients_list
-            .retain(|authorized_clients| authorized_clients.client_id == *client_id);
+            .retain(|authorized_clients| *authorized_clients.client_id == *client_id);
     }
 }
 
