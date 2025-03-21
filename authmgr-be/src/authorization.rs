@@ -204,12 +204,18 @@ impl AuthMgrBE {
 
         // Retrieve the transport ID
         let peer_transport_id = connection.get_peer_transport_id()?;
+        // Check for duplicated authentication attempts to enforce Trust On First Use (TOFU).
+        if self.auth_completed_pvms.has_transport_id(peer_transport_id) {
+            return Err(am_err!(
+                InstanceAlreadyAuthenticated,
+                "duplicated authentication attempt!"
+            ));
+        }
         let auth_started_entry =
             self.auth_started_pvms.take_via_transport_id(peer_transport_id).ok_or(am_err!(
                 AuthenticationNotStarted,
                 "An authentication started pVM was not found for the given transport id"
             ))?;
-        // Check for duplicated authentication attempts to enforce Trust On First Use (TOFU).
         if self.auth_completed_pvms.has_instance_id(&auth_started_entry.instance_id) {
             return Err(am_err!(
                 InstanceAlreadyAuthenticated,
