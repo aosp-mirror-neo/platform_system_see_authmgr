@@ -22,16 +22,7 @@ use crate::error::Error;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use authgraph_core::key::{CertChain, InstanceIdentifier, Policy};
-use authgraph_core::traits::{EcDsa, Rng};
 use authmgr_common::signed_connection_request::TransportID;
-
-/// The cryptographic functionality that must be provided by an implementation of AuthMgr BE
-pub struct CryptoTraitImpl {
-    /// Implementation of ECDSA functionality
-    pub ecdsa: Box<dyn EcDsa>,
-    /// Implementation of secure random number generation
-    pub rng: Box<dyn Rng>,
-}
 
 /// Trait defining device specific functionality
 pub trait Device: Send {

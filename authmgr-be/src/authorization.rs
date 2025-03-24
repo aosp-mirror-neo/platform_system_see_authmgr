@@ -27,7 +27,7 @@ use crate::{
         VERSION_PERSISTENT_INSTANCE_CONTEXT,
     },
     error::{Error, ErrorCode},
-    traits::{CryptoTraitImpl, Device, PersistentStorage, RawConnection, RpcConnection},
+    traits::{Device, PersistentStorage, RawConnection, RpcConnection},
     try_to_vec,
 };
 use alloc::boxed::Box;
@@ -36,7 +36,7 @@ use authgraph_core::key::{CertChain, DiceChainEntry, InstanceIdentifier, Policy}
 use authmgr_common::{
     extend_dice_policy_with, match_dice_cert_with_policy, match_dice_chain_with_policy,
     signed_connection_request::{Challenge, ConnectionRequest},
-    Token,
+    CryptoTraitImpl, Token,
 };
 use coset::CborSerializable;
 
