@@ -133,7 +133,8 @@ impl AuthMgrBE {
         let transport_id = connection.get_peer_transport_id()?;
 
         // Decode the DICE certificate chain
-        let cert_chain = CertChain::from_slice(cert_chain)?;
+        let cert_chain = CertChain::from_slice(cert_chain)
+            .map_err(|_e| am_err!(InvalidDiceCertChain, "failed to decode the DICE cert chain."))?;
 
         // First, extract the instance identifier from the DICE chain. Only if it is not present,
         // check if a valid instance identifier is provided via the optional parameter
