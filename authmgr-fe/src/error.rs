@@ -16,6 +16,7 @@
 
 //! Error definitions for AuthMgr FE
 
+use alloc::collections::TryReserveError;
 use android_hardware_security_see_authmgr::binder;
 use authgraph_core::error::Error as AuthGraphError;
 use coset::CoseError;
@@ -31,6 +32,10 @@ pub enum Error {
     CoseError(coset::CoseError),
     /// An error with a provided crypto operation
     CryptoError(AuthGraphError),
+    /// A fallible allocation has failed
+    FailedAlloc,
+    /// Failed to connect to AuthMgr-BE
+    AuthMgrBeConnectionFailed,
 }
 
 impl From<binder::Status> for Error {
@@ -60,5 +65,11 @@ impl From<AuthGraphError> for Error {
 impl From<authmgr_common::Error> for Error {
     fn from(e: authmgr_common::Error) -> Self {
         Self::AuthMgrCommonError(e)
+    }
+}
+
+impl From<TryReserveError> for Error {
+    fn from(_: TryReserveError) -> Self {
+        Self::FailedAlloc
     }
 }

@@ -20,7 +20,7 @@ use crate::error::Error;
 use authmgr_common::signed_connection_request::TransportIdInfo;
 
 /// Device specific behavior that a concrete implementation needs to provide
-pub trait Device {
+pub trait Device: Send {
     /// This function can be implemented to provide a unique instance id for
     /// a given AuthMgr FE.
     ///
@@ -33,4 +33,13 @@ pub trait Device {
     /// The transport info for the AuthMgr Frontend (this pVM) and the
     /// AuthMgr Backend (i.e. where IAuthMgrAuthorization is running)
     fn get_transport_id_info(&self) -> Result<TransportIdInfo, Error>;
+}
+
+/// Implementers of this trait are connections to the AuthMgr-BE requesting
+/// to be handed over to a trusted service.
+///
+/// See `AuthMgrFe::authorize_connection` for more detail.
+pub trait ConnectionToAuthorize {
+    /// Send data on this connection. Implementers must send the entire buffer.
+    fn send(&self, buff: &[u8]) -> Result<(), Error>;
 }
