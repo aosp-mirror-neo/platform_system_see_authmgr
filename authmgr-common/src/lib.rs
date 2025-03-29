@@ -19,8 +19,10 @@
 #![no_std]
 extern crate alloc;
 
+use alloc::boxed::Box;
 use alloc::string::String;
 use authgraph_core::key::{CertChain, DiceChainEntry, Policy};
+use authgraph_core::traits::{EcDsa, Rng};
 use coset::{CborSerializable, CoseError};
 use dice_policy::{DicePolicy, DICE_POLICY_VERSION};
 
@@ -58,6 +60,14 @@ pub enum ErrorCode {
     DicePolicyMatchingFailed,
     /// Other error
     UnknownError,
+}
+
+/// The cryptographic functionality that must be provided by an implementation of AuthMgr BE
+pub struct CryptoTraitImpl {
+    /// Implementation of ECDSA functionality
+    pub ecdsa: Box<dyn EcDsa>,
+    /// Implementation of secure random number generation
+    pub rng: Box<dyn Rng>,
 }
 
 /// AuthMgr common result type

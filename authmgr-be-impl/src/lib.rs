@@ -24,8 +24,10 @@ extern crate alloc;
 use authgraph_boringssl::{ec::BoringEcDsa, BoringRng};
 use authgraph_core::key::{CertChain, InstanceIdentifier, Policy};
 use authmgr_be::error::Error;
-use authmgr_be::traits::{CryptoTraitImpl, Device, RawConnection};
-use authmgr_common::{match_dice_chain_with_policy, signed_connection_request::TransportID};
+use authmgr_be::traits::{Device, RawConnection};
+use authmgr_common::{
+    match_dice_chain_with_policy, signed_connection_request::TransportID, CryptoTraitImpl,
+};
 use std::collections::HashMap;
 
 pub mod mock_storage;

@@ -27,7 +27,7 @@ use crate::{
         VERSION_PERSISTENT_INSTANCE_CONTEXT,
     },
     error::{Error, ErrorCode},
-    traits::{CryptoTraitImpl, Device, PersistentStorage, RawConnection, RpcConnection},
+    traits::{Device, PersistentStorage, RawConnection, RpcConnection},
     try_to_vec,
 };
 use alloc::boxed::Box;
@@ -36,7 +36,7 @@ use authgraph_core::key::{CertChain, DiceChainEntry, InstanceIdentifier, Policy}
 use authmgr_common::{
     extend_dice_policy_with, match_dice_cert_with_policy, match_dice_chain_with_policy,
     signed_connection_request::{Challenge, ConnectionRequest},
-    Token,
+    CryptoTraitImpl, Token,
 };
 use coset::CborSerializable;
 
@@ -133,7 +133,8 @@ impl AuthMgrBE {
         let transport_id = connection.get_peer_transport_id()?;
 
         // Decode the DICE certificate chain
-        let cert_chain = CertChain::from_slice(cert_chain)?;
+        let cert_chain = CertChain::from_slice(cert_chain)
+            .map_err(|_e| am_err!(InvalidDiceCertChain, "failed to decode the DICE cert chain."))?;
 
         // First, extract the instance identifier from the DICE chain. Only if it is not present,
         // check if a valid instance identifier is provided via the optional parameter
