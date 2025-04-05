@@ -18,18 +18,19 @@
 //! hardware/interfaces/security/see/authmgr/IAuthMgrAuthorization.aidl
 
 use crate::error::Error;
-use crate::traits::Device;
+use crate::traits::{ConnectionToAuthorize, Device};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
 use android_hardware_security_see_authmgr::aidl::android::hardware::security::see::authmgr::{
-    DicePolicy::DicePolicy, ExplicitKeyDiceCertChain::ExplicitKeyDiceCertChain,
+    DiceChainEntry::DiceChainEntry, DiceLeafArtifacts::DiceLeafArtifacts, DicePolicy::DicePolicy,
+    ExplicitKeyDiceCertChain::ExplicitKeyDiceCertChain,
     IAuthMgrAuthorization::IAuthMgrAuthorization, SignedConnectionRequest::SignedConnectionRequest,
 };
 use android_hardware_security_see_authmgr::binder;
-use authgraph_core::key::{CertChain, EcSignKey};
+use authgraph_core::key::{CertChain, DiceChainEntry as AuthGraphDiceChainEntry, EcSignKey};
 use authmgr_common::signed_connection_request::{Challenge, ConnectionRequest, TransportIdInfo};
-use authmgr_common::CryptoTraitImpl;
+use authmgr_common::{CryptoTraitImpl, Token, CMD_RAW, TOKEN_LENGTH};
 use coset::CborSerializable;
 
 /// The core logic for AuthMgr FE
@@ -50,7 +51,9 @@ impl AuthMgrFe {
         AuthMgrFe { device, crypto, authmgr, is_pvm_authenticated: false }
     }
 
-    /// Phase 1 authentication of the pvm
+    /// Authenticate a protected virtual machine (pVM).
+    ///
+    /// In IAuthMgrAuthorization this is referred to as phase 1 of the AuthMgr protocol.
     ///
     /// `policy` is a CBOR-encoded DicePolicy as defined in
     /// hardware/interfaces/security/authgraph/aidl/android/hardware/security/authgraph/ \
@@ -94,6 +97,67 @@ impl AuthMgrFe {
         self.is_pvm_authenticated = true;
 
         Ok(())
+    }
+
+    /// Authorize a connection on behalf of a client.
+    ///
+    /// In IAuthMgrAuthorization this is referred to as phase 2 of the AuthMgr protocol.
+    ///
+    /// A successful Result from this function indicates that the caller can hand the given
+    /// connection back to the specified client and that client can expect that the requested
+    /// trusted service will be on the other end of the connection (i.e. AuthMgr-BE has also
+    /// handed its end of the connection off).
+    ///
+    /// `client_id` must be unique within this OS and should be enforced by an entity with greater
+    /// privilege than AuthMgr-FE if possible. As an example, the Trusty OS uses trusted applet
+    /// UUIDs, which are provided to AuthMgr-FE by the kernel during IPC.
+    ///
+    /// `leaf_policy` is a CBOR-encoded DicePolicy as defined in
+    /// hardware/interfaces/security/authgraph/aidl/android/hardware/security/authgraph/ \
+    /// DicePolicy.cddl
+    ///
+    /// A `leaf_policy` should be specified in such a way as to uniquely identify a client and
+    /// prevent other clients within this pVM from impersonating that client. In the initial Trusty
+    /// pVMs, we use UUIDs as component names for DICE leaf certs, but environments with dynamic app
+    /// loading or multiple signing entities will need to consider limits on authorities, security
+    /// versions, and other OS-specific policies.
+    pub fn authorize_connection(
+        &self,
+        connection: &dyn ConnectionToAuthorize,
+        client_id: &[u8],
+        service_name: &str,
+        // TODO at the end of the day these values are just serialized directly.
+        // It does not make sense for callers to serde only for us to ser again.
+        dice_leaf: AuthGraphDiceChainEntry,
+        leaf_policy: Vec<u8>,
+    ) -> Result<(), Error> {
+        // The initial message on the out of band connection consists of
+        // a single byte control character (CMD_RAW) and a Token.
+        let msg_size = 1 + TOKEN_LENGTH;
+        let mut initial_msg = Vec::new();
+        initial_msg.try_reserve(msg_size)?;
+        initial_msg.push(CMD_RAW);
+        initial_msg.resize(msg_size, 0);
+        let token: &mut Token = &mut initial_msg[1..]
+            .try_into()
+            .expect("initial_msg should have TOKEN_LENGTH bytes remaining after initial CMD_RAW");
+        self.crypto.rng.fill_bytes(token.as_mut_slice());
+
+        connection.send(&initial_msg)?;
+
+        let dice_leaf_artifacts = DiceLeafArtifacts {
+            diceLeaf: DiceChainEntry { diceChainEntry: dice_leaf.to_vec()? },
+            diceLeafPolicy: DicePolicy { dicePolicy: leaf_policy },
+        };
+
+        // We've established a connection to the AuthMgr-BE and sent a unique token over
+        // to it. Now ask the AuthMgr-BE to authorize it.
+        Ok(self.authmgr.authorizeAndConnectClientToTrustedService(
+            client_id,
+            service_name,
+            token,
+            &dice_leaf_artifacts,
+        )?)
     }
 
     fn get_signed_connection_request(
