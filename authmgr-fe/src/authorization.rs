@@ -21,14 +21,15 @@ use crate::error::Error;
 use crate::traits::{ConnectionToAuthorize, Device};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use log::warn;
 
 use android_hardware_security_see_authmgr::aidl::android::hardware::security::see::authmgr::{
     DiceChainEntry::DiceChainEntry, DiceLeafArtifacts::DiceLeafArtifacts, DicePolicy::DicePolicy,
-    ExplicitKeyDiceCertChain::ExplicitKeyDiceCertChain,
+    Error::Error as IAuthMgrAuthorizationError, ExplicitKeyDiceCertChain::ExplicitKeyDiceCertChain,
     IAuthMgrAuthorization::IAuthMgrAuthorization, SignedConnectionRequest::SignedConnectionRequest,
 };
 use android_hardware_security_see_authmgr::binder;
-use authgraph_core::key::{CertChain, DiceChainEntry as AuthGraphDiceChainEntry, EcSignKey};
+use authgraph_core::key::{DiceChainEntry as AuthGraphDiceChainEntry, EcSignKey};
 use authmgr_common::signed_connection_request::{Challenge, ConnectionRequest, TransportIdInfo};
 use authmgr_common::{CryptoTraitImpl, Token, CMD_RAW, TOKEN_LENGTH};
 use coset::CborSerializable;
@@ -73,11 +74,11 @@ impl AuthMgrFe {
     /// AuthMgr protocol.
     pub fn authenticate_pvm(
         &mut self,
-        cert_chain: CertChain,
+        cert_chain: Vec<u8>,
         signing_key: EcSignKey,
         policy: Vec<u8>,
     ) -> Result<(), Error> {
-        let dice_chain = ExplicitKeyDiceCertChain { diceCertChain: cert_chain.to_vec()? };
+        let dice_chain = ExplicitKeyDiceCertChain { diceCertChain: cert_chain };
 
         // We need to convert from Option<[u8: 64]> to what
         // initAuthentication expects, Option<&[u8]>
@@ -138,10 +139,8 @@ impl AuthMgrFe {
         initial_msg.try_reserve(msg_size)?;
         initial_msg.push(CMD_RAW);
         initial_msg.resize(msg_size, 0);
-        let token: &mut Token = &mut initial_msg[1..]
-            .try_into()
-            .expect("initial_msg should have TOKEN_LENGTH bytes remaining after initial CMD_RAW");
-        self.crypto.rng.fill_bytes(token.as_mut_slice());
+        self.crypto.rng.fill_bytes(&mut initial_msg[1..]);
+        let token: &Token = initial_msg[1..].try_into().expect("token should be TOKEN_LENGTH size");
 
         connection.send(&initial_msg)?;
 
@@ -152,12 +151,37 @@ impl AuthMgrFe {
 
         // We've established a connection to the AuthMgr-BE and sent a unique token over
         // to it. Now ask the AuthMgr-BE to authorize it.
-        Ok(self.authmgr.authorizeAndConnectClientToTrustedService(
+        let auth_res = self.authmgr.authorizeAndConnectClientToTrustedService(
             client_id,
             service_name,
             token,
             &dice_leaf_artifacts,
-        )?)
+        );
+
+        // TODO: b/411457820 - remove this once we update the protocol to fix this issue
+        // There's no guarantee that the service will process the raw connection before we
+        // attempt to authorize. We currently have no way of knowing that the send on our
+        // raw connection was processed. In that case only, we retry. Retrying with the same token
+        // should be fine because the BE hasn't seen it yet.
+        match auth_res {
+            Ok(_) => Ok(()),
+            Err(b)
+                if b.service_specific_error()
+                    == IAuthMgrAuthorizationError::NO_CONNECTION_TO_AUTHORIZE.get() =>
+            {
+                warn!(
+                    "Retrying authorization for client {client_id:?} and service {service_name} \
+                because authmgr-be has not processed the raw connection yet"
+                );
+                Ok(self.authmgr.authorizeAndConnectClientToTrustedService(
+                    client_id,
+                    service_name,
+                    token,
+                    &dice_leaf_artifacts,
+                )?)
+            }
+            Err(e) => Err(e)?,
+        }
     }
 
     fn get_signed_connection_request(
