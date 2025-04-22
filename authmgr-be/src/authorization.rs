@@ -57,13 +57,15 @@ pub struct AuthMgrBE {
 }
 
 /// Data structure encapsulating the global sequence number - which is used to assign a unique
-/// identifier to the instances and clients by the AuthMgr BE
-pub struct LatestGlobalSeqNum(i32);
+/// identifier to the instances and clients by the AuthMgr BE.
+/// Currently, AIDL types do not support u64. Therefore, we use i64 here, although client sequence
+/// number cannot be negative.
+pub struct LatestGlobalSeqNum(i64);
 
 impl LatestGlobalSeqNum {
     /// Constructs an instance of the in-memory global sequence number given the latest global
     /// sequence number which is read from the persistent storage
-    pub fn new(latest_global_seq_num: i32) -> Self {
+    pub fn new(latest_global_seq_num: i64) -> Self {
         Self(latest_global_seq_num)
     }
 
@@ -72,7 +74,7 @@ impl LatestGlobalSeqNum {
     pub fn fetch_and_increment(
         &mut self,
         persistent_storage: &mut dyn PersistentStorage,
-    ) -> Result<i32, Error> {
+    ) -> Result<i64, Error> {
         let current_global_seq_num = self.0;
         self.0 = persistent_storage.increment_global_sequence_number()?;
         Ok(current_global_seq_num)
@@ -425,7 +427,7 @@ impl AuthMgrBE {
         instance_id: &Arc<InstanceIdentifier>,
         given_policy: &Arc<Policy>,
         dice_chain: &CertChain,
-    ) -> Result<i32, Error> {
+    ) -> Result<i64, Error> {
         match self.persistent_storage.read_instance_context(instance_id)? {
             Some(instance_ctx) => {
                 self.enforce_rollback_protection_for_pvm(
@@ -506,7 +508,7 @@ impl AuthMgrBE {
     // A helper method to enforce rollback protection for a client already in the cache.
     fn enforce_rollback_protection_for_client_in_cache(
         &mut self,
-        instance_seq_number: i32,
+        instance_seq_number: i64,
         is_persistent: bool,
         authorized_client: &mut AuthorizedClient,
         given_dice_cert: &DiceChainEntry,
@@ -529,11 +531,11 @@ impl AuthMgrBE {
 
     fn handle_client_in_persistent_storage(
         &mut self,
-        instance_seq_number: i32,
+        instance_seq_number: i64,
         client_id: &Arc<ClientId>,
         given_dice_cert: &DiceChainEntry,
         given_policy: &Arc<Policy>,
-    ) -> Result<i32, Error> {
+    ) -> Result<i64, Error> {
         match self.persistent_storage.read_client_context(instance_seq_number, client_id)? {
             Some(client_ctx) => {
                 self.enforce_rollback_protection_for_client(
@@ -572,7 +574,7 @@ impl AuthMgrBE {
 
     fn enforce_rollback_protection_for_client(
         &mut self,
-        instance_seq_number: i32,
+        instance_seq_number: i64,
         client_id: &Arc<ClientId>,
         given_dice_cert: &DiceChainEntry,
         given_policy: &Arc<Policy>,
@@ -617,7 +619,7 @@ impl AuthMgrBE {
     fn update_global_list_of_authorized_clients(
         &mut self,
         state: &AuthenticatedConnectionState,
-        client_seq_number: i32,
+        client_seq_number: i64,
         client_id: &Arc<ClientId>,
         dice_leaf: &DiceChainEntry,
         given_policy: &Arc<Policy>,
