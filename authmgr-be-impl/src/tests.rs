@@ -20,6 +20,7 @@ use crate::AuthMgrBeDevice;
 use authgraph_core::key::{CertChain, DiceChainEntry, InstanceIdentifier, Policy};
 use authgraph_core_test::{
     create_dice_cert_chain_for_guest_os, create_dice_leaf_cert, CdiValues, SAMPLE_INSTANCE_HASH,
+    TEST_OS_COMPONENT_NAME,
 };
 use authmgr_be::authorization::AuthMgrBE;
 use authmgr_be::data_structures::MemoryLimits;
@@ -46,7 +47,7 @@ fn test_auth_mgr_protocol_single_pvm() {
         .extract_instance_identifier_in_guest_os_entry()
         .expect("error in extracting instance id")
         .unwrap();
-    let constraint_spec = get_constraints_spec_for_trusty_vm();
+    let constraint_spec = get_constraints_spec_for_trusty_vm(TEST_OS_COMPONENT_NAME);
 
     let dice_policy = Policy(
         dice_policy_builder::policy_for_dice_chain(&dice_cert, constraint_spec)
