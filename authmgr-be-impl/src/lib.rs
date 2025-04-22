@@ -79,7 +79,7 @@ impl Device for AuthMgrBeDevice {
     fn handover_client_connection(
         &self,
         _service_name: &str,
-        _client_seq_number: i32,
+        _client_seq_number: i64,
         _client_conn_handle: Box<dyn RawConnection>,
         _is_persistent: bool,
     ) -> Result<(), Error> {
