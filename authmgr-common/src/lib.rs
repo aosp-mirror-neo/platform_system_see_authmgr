@@ -147,11 +147,10 @@ mod tests {
     use alloc::string::ToString;
     use alloc::{vec, vec::Vec};
     use authgraph_boringssl::ec::BoringEcDsa;
-    use authgraph_core::key::{
-        AUTHORITY_HASH, CONFIG_DESC, GUEST_OS_COMPONENT_NAME, INSTANCE_HASH, MODE, SECURITY_VERSION,
-    };
+    use authgraph_core::key::{AUTHORITY_HASH, CONFIG_DESC, INSTANCE_HASH, MODE, SECURITY_VERSION};
     use authgraph_core_test::{
         create_dice_cert_chain_for_guest_os, create_dice_leaf_cert, SAMPLE_INSTANCE_HASH,
+        TEST_OS_COMPONENT_NAME,
     };
     use authmgr_common_util::{
         get_constraint_spec_for_static_trusty_ta, get_constraints_spec_for_trusty_vm,
@@ -167,7 +166,7 @@ mod tests {
         let cert_chain_1 =
             CertChain::from_slice(&cert_chain_bytes_1).expect("failed to decode cert_chain 1");
         // Create constraints spec 1
-        let constraint_spec_1 = get_constraints_spec_for_trusty_vm();
+        let constraint_spec_1 = get_constraints_spec_for_trusty_vm(TEST_OS_COMPONENT_NAME);
         // Create policy 1 given constraints spec 1 and DICE chain 1
         let policy_1 = Policy(
             dice_policy_builder::policy_for_dice_chain(
@@ -243,7 +242,7 @@ mod tests {
         let cert_chain_1 =
             CertChain::from_slice(&cert_chain_bytes_1).expect("failed to decode cert_chain 1");
         // Create constraints spec 1
-        let constraint_spec_1 = get_constraints_spec_for_trusty_vm();
+        let constraint_spec_1 = get_constraints_spec_for_trusty_vm(TEST_OS_COMPONENT_NAME);
         // Create policy 1 given constraints spec 1 and DICE chain 1
         let policy_1 = Policy(
             dice_policy_builder::policy_for_dice_chain(
@@ -413,13 +412,13 @@ mod tests {
                 ConstraintType::ExactMatch,
                 vec![CONFIG_DESC, INSTANCE_HASH],
                 MissingAction::Fail,
-                TargetEntry::ByName(GUEST_OS_COMPONENT_NAME.to_string()),
+                TargetEntry::ByName(TEST_OS_COMPONENT_NAME.to_string()),
             ),
             ConstraintSpec::new(
                 ConstraintType::GreaterOrEqual,
                 vec![CONFIG_DESC, SECURITY_VERSION],
                 MissingAction::Fail,
-                TargetEntry::ByName(GUEST_OS_COMPONENT_NAME.to_string()),
+                TargetEntry::ByName(TEST_OS_COMPONENT_NAME.to_string()),
             ),
         ]
     }
