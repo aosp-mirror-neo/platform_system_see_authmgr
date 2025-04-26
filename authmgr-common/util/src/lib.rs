@@ -20,8 +20,8 @@ extern crate alloc;
 
 use alloc::vec::Vec;
 use authgraph_core::key::{
-    DiceChainEntry, AUTHORITY_HASH, COMPONENT_NAME, CONFIG_DESC, GUEST_OS_COMPONENT_NAME,
-    INSTANCE_HASH, MODE, SECURITY_VERSION,
+    DiceChainEntry, AUTHORITY_HASH, COMPONENT_NAME, CONFIG_DESC, INSTANCE_HASH, MODE,
+    SECURITY_VERSION,
 };
 use authmgr_common::{amc_err, Error, ErrorCode, Result};
 use dice_policy::{DicePolicy, NodeConstraints, DICE_POLICY_VERSION};
@@ -57,7 +57,7 @@ pub fn policy_for_dice_node(
 /// Constraints spec to create a DICE policy for a DICE cert chain of a Trusty VM.
 /// Note that this is a helper method only. The implementors of AuthMgr-FE should build a constraint
 /// spec according to their environment and requirements.
-pub fn get_constraints_spec_for_trusty_vm() -> Vec<ConstraintSpec> {
+pub fn get_constraints_spec_for_trusty_vm(guest_os_component_name: &str) -> Vec<ConstraintSpec> {
     vec![
         ConstraintSpec::new(
             ConstraintType::ExactMatch,
@@ -81,13 +81,26 @@ pub fn get_constraints_spec_for_trusty_vm() -> Vec<ConstraintSpec> {
             ConstraintType::ExactMatch,
             vec![CONFIG_DESC, INSTANCE_HASH],
             MissingAction::Fail,
-            TargetEntry::ByName(GUEST_OS_COMPONENT_NAME.to_string()),
+            TargetEntry::ByName(guest_os_component_name.to_string()),
         ),
         ConstraintSpec::new(
             ConstraintType::GreaterOrEqual,
             vec![CONFIG_DESC, SECURITY_VERSION],
             MissingAction::Fail,
-            TargetEntry::ByName(GUEST_OS_COMPONENT_NAME.to_string()),
+            TargetEntry::ByName(guest_os_component_name.to_string()),
+        ),
+        // Trusty system VMs are all signed with the same key. By default
+        // pvmfw gives all VMs the same component name in their DICE cert.
+        // This makes trusty VM policies potentially distinguishable only by the
+        // host-provided instance id. When we build trusty VMs we assign a
+        // unique name by setting the avb footer property com.android.virt.name.
+        // Constraining our DICE policies on this name ensures the cert chain
+        // of one system trusty VM cannot match the policy of another.
+        ConstraintSpec::new(
+            ConstraintType::ExactMatch,
+            vec![CONFIG_DESC, COMPONENT_NAME],
+            MissingAction::Fail,
+            TargetEntry::ByName(guest_os_component_name.to_string()),
         ),
     ]
 }

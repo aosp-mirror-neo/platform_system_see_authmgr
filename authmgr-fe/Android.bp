@@ -27,6 +27,7 @@ rust_defaults {
         "libauthmgr_common",
         "libcoset",
         "libciborium",
+        "liblog_rust",
     ],
     no_stdlibs: true,
 }
