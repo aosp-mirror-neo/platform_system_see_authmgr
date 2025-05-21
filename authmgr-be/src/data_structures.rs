@@ -138,6 +138,20 @@ pub struct DiceArtifacts {
     pub policy: Arc<Policy>,
 }
 
+/// Enum representing the three different outcomes of matching a given DICE policy against the
+/// client's latest DICE chain and comparing the given DICE policy with the client's latest DICE
+/// policy.
+pub enum PolicyMatchingResult {
+    /// The given policy matches the DICE chain and the policy is the latest one
+    Success,
+
+    /// The given policy matches the DICE chain but it is not the latest policy
+    MatchedNotCurrent,
+
+    /// The given policy does not match the DICE chain
+    Failed,
+}
+
 /// Information associated with an authorized client. This information is used to check for
 /// duplicate authorization attempts for the same client.
 #[derive(Clone)]
@@ -507,6 +521,13 @@ impl AuthorizedClientsGlobalList {
     pub fn get_mut(&mut self, seq_number: i64) -> Option<&mut AuthorizedClientFullDiceArtifacts> {
         self.authorized_clients_list
             .iter_mut()
+            .find(|authorized_client| authorized_client.sequence_number == seq_number)
+    }
+
+    /// Retrieve an immutable client given the client's unique sequence number
+    pub fn get(&self, seq_number: i64) -> Option<&AuthorizedClientFullDiceArtifacts> {
+        self.authorized_clients_list
+            .iter()
             .find(|authorized_client| authorized_client.sequence_number == seq_number)
     }
 

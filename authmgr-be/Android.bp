@@ -27,6 +27,23 @@ rust_library {
         "libauthmgr_common",
         "libcoset",
         "liblog_rust",
+        "libthiserror",
+    ],
+}
+
+rust_library_rlib {
+    name: "libauthmgr_be_nostd",
+    crate_name: "authmgr_be",
+    srcs: ["src/lib.rs"],
+    vendor_available: true,
+    prefer_rlib: true,
+    no_stdlibs: true,
+    rustlibs: [
+        "libauthgraph_core_nostd",
+        "libauthmgr_common_nostd",
+        "libcoset_nostd",
+        "liblog_rust_nostd",
+        "libthiserror_nostd",
     ],
 }
 

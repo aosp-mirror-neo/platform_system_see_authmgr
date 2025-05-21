@@ -25,9 +25,13 @@ use authgraph_core::key::{CertChain, DiceChainEntry, Policy};
 use authgraph_core::traits::{EcDsa, Rng};
 use coset::{CborSerializable, CoseError};
 use dice_policy::{DicePolicy, DICE_POLICY_VERSION};
+use thiserror::Error;
 
 pub mod signed_connection_request;
 
+/// CMD_* represent a particular command sent to the AuthMgr main service, which multiplexes
+/// requests to the relevant service end point.
+///
 /// The command byte to indicate the intent to connect to the `IAuthMgrAuthorization` service via
 /// RPC binder
 pub const CMD_RPC: u8 = 0u8;
@@ -40,25 +44,33 @@ pub const TOKEN_LENGTH: usize = 32;
 pub type Token = [u8; TOKEN_LENGTH];
 
 /// AuthMgr common error type
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Error, PartialEq)]
+#[error("error code: {0}, message: {1}")]
 pub struct Error(pub ErrorCode, pub String);
 
 /// AuthMgr common error codes
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Error, PartialEq)]
 pub enum ErrorCode {
     /// CBOR encoding failed
+    #[error("CborEncodingFailed")]
     CborEncodingFailed,
     /// CBOR decoding failed
+    #[error("CborDecodingFailed")]
     CborDecodingFailed,
     /// Signing failed
+    #[error("SigningFailed")]
     SigningFailed,
     /// Signature verification failed
+    #[error("SignatureVerificationFailed")]
     SignatureVerificationFailed,
     /// Failed to create a DICE policy
+    #[error("DicePolicyCreationFailed")]
     DicePolicyCreationFailed,
     /// Failed to match DICE policy
+    #[error("DicePolicyMatchingFailed")]
     DicePolicyMatchingFailed,
     /// Other error
+    #[error("UnknownError")]
     UnknownError,
 }
 
@@ -84,7 +96,7 @@ impl core::convert::From<CoseError> for Error {
     }
 }
 
-/// Macro to build an [`Error`] instance.
+/// Macro to build an [`struct@Error`] instance.
 /// E.g. use: `amc_err!(SigningFailed, "some {} format", arg)`.
 #[macro_export]
 macro_rules! amc_err {

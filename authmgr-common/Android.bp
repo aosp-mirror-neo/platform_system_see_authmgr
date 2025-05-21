@@ -28,6 +28,27 @@ rust_library {
         "libdice_policy",
         "liblog_rust",
         "libnum_traits",
+        "libthiserror",
+    ],
+    proc_macros: [
+        "libnum_derive",
+    ],
+}
+
+rust_library_rlib {
+    name: "libauthmgr_common_nostd",
+    crate_name: "authmgr_common",
+    srcs: ["src/lib.rs"],
+    vendor_available: true,
+    prefer_rlib: true,
+    no_stdlibs: true,
+    rustlibs: [
+        "libauthgraph_core_nostd",
+        "libcoset_nostd",
+        "libdice_policy_nostd",
+        "liblog_rust_nostd",
+        "libnum_traits_nostd",
+        "libthiserror_nostd",
     ],
     proc_macros: [
         "libnum_derive",
@@ -49,6 +70,7 @@ rust_test {
         "libdice_policy",
         "libdice_policy_builder",
         "libnum_traits",
+        "libthiserror",
     ],
     proc_macros: [
         "libnum_derive",
