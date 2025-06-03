@@ -57,7 +57,7 @@ pub struct AuthenticatedConnectionState {
     /// Transport id of the pvm
     pub transport_id: TransportID,
     /// Unique sequence number assigned to the instance by the AuthMgr BE
-    pub instance_seq_number: i32,
+    pub instance_seq_number: i64,
     /// DICE artifacts of the pvm
     pub dice_artifacts: DiceArtifacts,
     /// Public key of the signing key pair of the pvm
@@ -75,7 +75,7 @@ impl AuthenticatedConnectionState {
     pub fn new(
         instance_id: Arc<InstanceIdentifier>,
         transport_id: TransportID,
-        instance_seq_number: i32,
+        instance_seq_number: i64,
         dice_artifacts: DiceArtifacts,
         pub_signing_key: EcVerifyKey,
         is_persistent: bool,
@@ -145,7 +145,7 @@ pub struct AuthorizedClient {
     /// Client id
     pub client_id: Arc<ClientId>,
     /// Unique sequence number assigned to the client by the AuthMgr BE
-    pub sequence_number: i32,
+    pub sequence_number: i64,
     /// DICE policy of the client
     pub policy: Arc<Policy>,
 }
@@ -164,7 +164,7 @@ pub struct PersistentInstanceContext {
     /// Version of the data structure format
     pub version: i32,
     /// Unique sequence number of the persistent instance
-    pub sequence_number: i32,
+    pub sequence_number: i64,
     /// DICE policy
     pub dice_policy: Arc<Policy>,
 }
@@ -175,7 +175,7 @@ pub struct PersistentClientContext {
     /// Version of the data structure format
     pub version: i32,
     /// Unique sequence number of the persistent client
-    pub sequence_number: i32,
+    pub sequence_number: i64,
     /// DICE policy
     pub dice_policy: Arc<Policy>,
 }
@@ -475,7 +475,7 @@ impl PendingClientAuthorizations {
 /// "policy matching as a service" provided by AuthMgr BE.
 pub struct AuthorizedClientFullDiceArtifacts {
     /// Unique sequence number of the client
-    pub sequence_number: i32,
+    pub sequence_number: i64,
     /// Transport id of the pvm that the client belongs to (used to cleanup the cache upon
     /// connection close by the pvm)
     pub transport_id: TransportID,
@@ -504,7 +504,7 @@ impl AuthorizedClientsGlobalList {
     }
 
     /// Retrieve a mutable client given the client's unique sequence number
-    pub fn get_mut(&mut self, seq_number: i32) -> Option<&mut AuthorizedClientFullDiceArtifacts> {
+    pub fn get_mut(&mut self, seq_number: i64) -> Option<&mut AuthorizedClientFullDiceArtifacts> {
         self.authorized_clients_list
             .iter_mut()
             .find(|authorized_client| authorized_client.sequence_number == seq_number)

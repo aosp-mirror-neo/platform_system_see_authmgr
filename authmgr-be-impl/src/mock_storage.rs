@@ -30,7 +30,7 @@ use std::collections::{hash_map::Entry, HashMap};
 
 /// Instance sequence number is part of the fully qualified path of a client's storage
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub struct InstanceSeqNumber(i32);
+pub struct InstanceSeqNumber(i64);
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 struct FullyQualifiedClientId(InstanceSeqNumber, Arc<ClientId>);
@@ -38,7 +38,7 @@ struct FullyQualifiedClientId(InstanceSeqNumber, Arc<ClientId>);
 /// In-memory implementation for AuthMgr persistent storage
 #[derive(Default)]
 pub struct MockPersistentStorage {
-    global_seq_num: i32,
+    global_seq_num: i64,
     instances: HashMap<Arc<InstanceIdentifier>, PersistentInstanceContext>,
     clients: HashMap<FullyQualifiedClientId, PersistentClientContext>,
 }
@@ -69,7 +69,7 @@ impl Storage for MockPersistentStorage {
 
     fn update_client_policy_in_storage(
         &mut self,
-        instance_seq_number: i32,
+        instance_seq_number: i64,
         client_id: &Arc<ClientId>,
         latest_dice_policy: &Arc<Policy>,
     ) -> Result<(), Error> {
@@ -106,7 +106,7 @@ impl Storage for MockPersistentStorage {
 
     fn read_client_context(
         &self,
-        instance_seq_number: i32,
+        instance_seq_number: i64,
         client_id: &Arc<ClientId>,
     ) -> Result<Option<Self::ClientContext>, Error> {
         Ok(self
@@ -120,7 +120,7 @@ impl Storage for MockPersistentStorage {
 
     fn create_client_context(
         &mut self,
-        instance_seq_number: i32,
+        instance_seq_number: i64,
         client_id: &Arc<ClientId>,
         client_info: Self::ClientContext,
     ) -> Result<(), Error> {
@@ -137,11 +137,11 @@ impl Storage for MockPersistentStorage {
 }
 
 impl PersistentStorage for MockPersistentStorage {
-    fn get_or_create_global_sequence_number(&mut self) -> Result<i32, Error> {
+    fn get_or_create_global_sequence_number(&mut self) -> Result<i64, Error> {
         Ok(self.global_seq_num)
     }
 
-    fn increment_global_sequence_number(&mut self) -> Result<i32, Error> {
+    fn increment_global_sequence_number(&mut self) -> Result<i64, Error> {
         self.global_seq_num += 1;
         Ok(self.global_seq_num)
     }
