@@ -51,7 +51,7 @@ pub trait Device: Send {
     fn handover_client_connection(
         &self,
         service_name: &str,
-        client_seq_number: i32,
+        client_seq_number: i64,
         client_conn_handle: Box<dyn RawConnection>,
         is_persistent: bool,
     ) -> Result<(), Error>;
@@ -174,7 +174,7 @@ pub trait Storage: Send {
     /// Use this method to update the client's DICE policy.
     fn update_client_policy_in_storage(
         &mut self,
-        instance_seq_number: i32,
+        instance_seq_number: i64,
         client_id: &Arc<ClientId>,
         latest_dice_policy: &Arc<Policy>,
     ) -> Result<(), Error>;
@@ -201,7 +201,7 @@ pub trait Storage: Send {
     /// AuthMgr BE's secure storage, otherwise, return None.
     fn read_client_context(
         &self,
-        instance_seq_number: i32,
+        instance_seq_number: i64,
         client_id: &Arc<ClientId>,
     ) -> Result<Option<Self::ClientContext>, Error>;
 
@@ -210,7 +210,7 @@ pub trait Storage: Send {
     /// instance.
     fn create_client_context(
         &mut self,
-        instance_seq_number: i32,
+        instance_seq_number: i64,
         client_id: &Arc<ClientId>,
         client_info: Self::ClientContext,
     ) -> Result<(), Error>;
@@ -223,10 +223,10 @@ pub trait PersistentStorage:
 {
     /// Retrieve the global sequence number stored in the factory-reset surviving secure storage of
     /// the AuthMgr BE. If it does not already exist, initialize it from 0.
-    fn get_or_create_global_sequence_number(&mut self) -> Result<i32, Error>;
+    fn get_or_create_global_sequence_number(&mut self) -> Result<i64, Error>;
 
     /// Increment the global sequence number stored in the factory-reset surviving secure storage of
     /// the AuthMgr BE. Return the latest global sequence number if successful andan error if it
     /// does not exist in the AuthMgr BE's secure storage.
-    fn increment_global_sequence_number(&mut self) -> Result<i32, Error>;
+    fn increment_global_sequence_number(&mut self) -> Result<i64, Error>;
 }
