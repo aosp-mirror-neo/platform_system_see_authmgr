@@ -20,12 +20,12 @@ use alloc::string::String;
 use authgraph_core::error::Error as AGError;
 use authmgr_common::{Error as AMError, ErrorCode as AMErrorCode};
 use coset::CoseError;
-
-/// AuthMgr BE error type
+use thiserror::Error;
+/// AuthMgr BE error type for authorization related functionality.
 #[derive(Debug)]
 pub struct Error(pub ErrorCode, pub String);
 
-/// Internal error codes corresponding to values in `Error.aidl`
+/// Internal error codes corresponding to values in `Error.aidl` for `IAuthMgrAuthorization.aidl`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
 pub enum ErrorCode {
@@ -108,7 +108,7 @@ impl From<::alloc::collections::TryReserveError> for Error {
     }
 }
 
-/// Macro to build an [`Error`] instance.
+/// Macro to build an [`struct@crate::error::Error`] instance.
 /// E.g. use: `am_err!(InternalError, "some {} format", arg)`.
 #[macro_export]
 macro_rules! am_err {
@@ -116,3 +116,21 @@ macro_rules! am_err {
         Error(ErrorCode::$error_code,
               alloc::format!("{}:{}: {}", file!(), line!(), format_args!($($arg)+))) };
         }
+
+/// Internal error type defined for the errors related to the service provided by the AuthMgr-BE
+/// for the trusted services to retrieve DICE policies and/or match DICE policies against the latest
+/// DICE chain and policy of a client.
+#[derive(Error, Debug)]
+pub enum PolicyMatchingError {
+    /// Given client sequence number was not found in the in-memory list
+    #[error("could not find the client given by the sequence number")]
+    ClientSeqNumNotFound,
+
+    /// Failed to allocate memory
+    #[error("memory allocation failed due to: {0}")]
+    MemoryAllocationFailed(#[from] alloc::collections::TryReserveError),
+
+    /// AuthMgr error
+    #[error("authmgr error: {0}")]
+    AuthMgrCommonError(#[from] AMError),
+}

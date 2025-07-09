@@ -23,10 +23,10 @@ use crate::{
         AuthStartedPvm, AuthStartedPvms, AuthenticatedConnectionState, AuthenticatedPvms,
         AuthorizedClient, AuthorizedClientFullDiceArtifacts, AuthorizedClientsGlobalList, ClientId,
         DiceArtifacts, MemoryLimits, PendingClientAuthorization, PendingClientAuthorizations,
-        PersistentClientContext, PersistentInstanceContext, VERSION_PERSISTENT_CLIENT_CONTEXT,
-        VERSION_PERSISTENT_INSTANCE_CONTEXT,
+        PersistentClientContext, PersistentInstanceContext, PolicyMatchingResult,
+        VERSION_PERSISTENT_CLIENT_CONTEXT, VERSION_PERSISTENT_INSTANCE_CONTEXT,
     },
-    error::{Error, ErrorCode},
+    error::{Error, ErrorCode, PolicyMatchingError},
     traits::{Device, PersistentStorage, RawConnection, RpcConnection},
     try_to_vec,
 };
@@ -418,6 +418,37 @@ impl AuthMgrBE {
         self.authorized_clients.remove_via_transport_id(transport_id);
         connection.remove_authenticated_state()?;
         Ok(())
+    }
+
+    /// Retrieve the DICE policy for a client identified by the client sequence number, if the
+    /// client sequence number is found in the AuthMgr-BE's in-memory list
+    /// (i.e. AuthorizedClientsGlobalList).
+    pub fn get_policy(&self, client_seq_number: i64) -> Result<Policy, PolicyMatchingError> {
+        self.authorized_clients
+            .get(client_seq_number)
+            .map(|client| (*client.full_dice_artifacts.policy).clone())
+            .ok_or(PolicyMatchingError::ClientSeqNumNotFound)
+    }
+
+    /// Match a given policy against a client's latest DICE chain and compare the given policy with
+    /// the client's latest policy. The
+    pub fn match_policy(
+        &self,
+        client_seq_number: i64,
+        given_policy: &[u8],
+    ) -> Result<PolicyMatchingResult, PolicyMatchingError> {
+        let given_policy = Policy(try_to_vec(given_policy)?);
+        let client = self
+            .authorized_clients
+            .get(client_seq_number)
+            .ok_or(PolicyMatchingError::ClientSeqNumNotFound)?;
+        if !match_dice_chain_with_policy(&client.full_dice_artifacts.cert_chain, &given_policy)? {
+            Ok(PolicyMatchingResult::Failed)
+        } else if given_policy != *client.full_dice_artifacts.policy {
+            Ok(PolicyMatchingResult::MatchedNotCurrent)
+        } else {
+            Ok(PolicyMatchingResult::Success)
+        }
     }
 
     // A helper method for creating/updating the instance context in the secure storage and
