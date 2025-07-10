@@ -24,7 +24,7 @@
 use authgraph_core::key::{CertChain, DiceChainEntry, EcSignKey, Policy};
 use authgraph_core::traits::{EcDsa, Rng};
 use authmgr_be::authorization::AuthMgrBE;
-use authmgr_be::data_structures::{AuthenticatedConnectionState, ClientId};
+use authmgr_be::data_structures::{ClientId, ConnectionAuthState};
 use authmgr_be::error::Error;
 use authmgr_be::traits::{RawConnection, RpcConnection};
 use authmgr_common::{
@@ -139,53 +139,31 @@ pub struct RpcConnectionInfo {
     /// Transport ID (a.k.a VM ID)
     pub transport_id: TransportID,
     /// Conncection state to be stored by the AuthMgr protocol
-    pub connection_state: Option<AuthenticatedConnectionState>,
+    pub connection_state: ConnectionAuthState,
 }
 
 impl RpcConnectionInfo {
     /// Constructor
     pub fn new(transport_id: TransportID) -> Self {
-        Self { transport_id, connection_state: None }
+        Self { transport_id, connection_state: ConnectionAuthState::None }
     }
 }
 
 impl RpcConnection for RpcConnectionInfo {
-    /// Return the transport ID of the instance that is on the other end of the connection
     fn get_peer_transport_id(&self) -> Result<TransportID, Error> {
         Ok(self.transport_id)
     }
 
-    /// Store the re-usable information in the connection state to be used while serving multiple
-    /// client authorization requests from the same pVM instance
-    fn store_authenticated_state(
-        &mut self,
-        connection_state: AuthenticatedConnectionState,
-    ) -> Result<(), Error> {
-        self.connection_state = Some(connection_state);
-        Ok(())
+    fn set_current_auth_state(&mut self, auth_state: ConnectionAuthState) {
+        self.connection_state = auth_state;
     }
 
-    /// Return the state if the state has been stored for this connecction. Since the state is
-    /// stored only after the peer on the other side of the connection is authenticated, the
-    /// existence of a connection state is also an indication that the connection is authenticated.
-    fn get_authenticated_state(&self) -> Result<Option<&AuthenticatedConnectionState>, Error> {
-        Ok(self.connection_state.as_ref())
+    fn current_auth_state(&self) -> Result<&ConnectionAuthState, Error> {
+        Ok(&self.connection_state)
     }
 
-    /// Return the mutable state if the state has been stored for this connecction. Since the state
-    /// is stored only after the peer on the other side of the connection is authenticated, the
-    /// existence of a connection state is also an indication that the connection is authenticated.
-    fn get_mutable_authenticated_state(
-        &mut self,
-    ) -> Result<Option<&mut AuthenticatedConnectionState>, Error> {
-        Ok(self.connection_state.as_mut())
-    }
-
-    /// Delete the state stored associated with the connection. This is called when the connection
-    /// is closed.
-    fn remove_authenticated_state(&mut self) -> Result<(), Error> {
-        self.connection_state = None;
-        Ok(())
+    fn current_mut_auth_state(&mut self) -> Result<&mut ConnectionAuthState, Error> {
+        Ok(&mut self.connection_state)
     }
 }
 
@@ -225,7 +203,7 @@ impl RawConnection for RawConnectionInfo {
 pub fn test_auth_mgr_protocol_succeeds_single_pvm(authmgr_be: &mut AuthMgrBE, mut pvm: PVM) {
     let challenge: Challenge = authmgr_be
         .init_authentication(
-            &pvm.rpc_connection,
+            &mut pvm.rpc_connection,
             &pvm.dice_chain.clone().to_vec().expect("error in encoding the DICE chain"),
             None,
         )
