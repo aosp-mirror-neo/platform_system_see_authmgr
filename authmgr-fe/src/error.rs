@@ -17,6 +17,7 @@
 //! Error definitions for AuthMgr FE
 
 use alloc::collections::TryReserveError;
+use android_hardware_security_see_authmgr::aidl::android::hardware::security::see::authmgr::Error::Error as IAuthMgrAuthorizationError;
 use android_hardware_security_see_authmgr::binder;
 use authgraph_core::error::Error as AuthGraphError;
 use coset::CoseError;
@@ -36,10 +37,19 @@ pub enum Error {
     FailedAlloc,
     /// Failed to connect to AuthMgr-BE
     AuthMgrBeConnectionFailed,
+    /// AuthMgrFe was not authenticated (phase 1) when authorization
+    /// for a new connection (phase 2) was requested.
+    AuthMgrFeNotAuthenticated,
 }
 
 impl From<binder::Status> for Error {
     fn from(s: binder::Status) -> Self {
+        if s.service_specific_error()
+            == IAuthMgrAuthorizationError::CONNECTION_NOT_AUTHENTICATED.get()
+        {
+            return Self::AuthMgrFeNotAuthenticated;
+        }
+
         Self::BinderStatus(s)
     }
 }

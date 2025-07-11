@@ -132,6 +132,15 @@ impl AuthMgrFe {
         dice_leaf: AuthGraphDiceChainEntry,
         leaf_policy: Vec<u8>,
     ) -> Result<(), Error> {
+        // There's no need to try to execute phase 2 if we know we haven't completed phase 1.
+        // Note that we don't have an assurance here that the pVM is authenticated, just that it
+        // was at some point. The call below to `authorizeAndConnectClientToTrustedService` may
+        // still fail with this same error if the backend has removed the pVM; potentially due to
+        // resource constraints.
+        if !self.is_pvm_authenticated {
+            return Err(Error::AuthMgrFeNotAuthenticated);
+        }
+
         // The initial message on the out of band connection consists of
         // a single byte control character (CMD_RAW) and a Token.
         let msg_size = 1 + TOKEN_LENGTH;
