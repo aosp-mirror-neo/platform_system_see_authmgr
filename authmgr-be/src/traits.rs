@@ -16,7 +16,7 @@
 
 //! Traits representing crypto abstractions and device specific functionality
 use crate::data_structures::{
-    AuthenticatedConnectionState, ClientId, PersistentClientContext, PersistentInstanceContext,
+    ClientId, ConnectionAuthState, PersistentClientContext, PersistentInstanceContext,
 };
 use crate::error::Error;
 use alloc::boxed::Box;
@@ -70,28 +70,16 @@ pub trait RpcConnection: Send {
     /// Return the transport ID of the instance that is on the other end of the connection
     fn get_peer_transport_id(&self) -> Result<TransportID, Error>;
 
-    /// Store the re-usable information about the pvm and its clients in the connection state, to be
-    /// used for serving multiple client authorization requests from an already authenticated pvm
-    fn store_authenticated_state(
-        &mut self,
-        connection_state: AuthenticatedConnectionState,
-    ) -> Result<(), Error>;
+    /// Store the information about the current stage of the authentication life cycle of the
+    /// connection.
+    fn set_current_auth_state(&mut self, auth_state: ConnectionAuthState);
 
-    /// Return the state if the state has been stored for this connecction. Since the state is
-    /// stored only after the peer on the other side of the connection is authenticated, the
-    /// existence of a connection state is also an indication that the connection is authenticated.
-    fn get_authenticated_state(&self) -> Result<Option<&AuthenticatedConnectionState>, Error>;
+    /// Return the current stage of the authentication life cycle of the connection.
+    fn current_auth_state(&self) -> Result<&ConnectionAuthState, Error>;
 
-    /// Return the mutable state if the state has been stored for this connection. Since the state
-    /// is stored only after the peer on the other side of the connection is authenticated, the
-    /// existence of a connection state is also an indication that the connection is authenticated.
-    fn get_mutable_authenticated_state(
-        &mut self,
-    ) -> Result<Option<&mut AuthenticatedConnectionState>, Error>;
-
-    /// Delete the state stored associated with the connection. This is called when the connection
-    /// is closed.
-    fn remove_authenticated_state(&mut self) -> Result<(), Error>;
+    /// Return a mutable version of the current stage of the authentication life cycle of the
+    /// connection.
+    fn current_mut_auth_state(&mut self) -> Result<&mut ConnectionAuthState, Error>;
 }
 
 /// Trait defining the raw connection specific functionality required by AuthMgr BE.

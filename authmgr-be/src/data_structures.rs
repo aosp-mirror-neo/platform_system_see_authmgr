@@ -51,7 +51,7 @@ pub struct ClientId(pub Vec<u8>);
 /// Information stored in an authenticated connection established between a pVM and the AuthMgr BE.
 /// This information is re-used when serving multiple requests for authorizing the
 /// clients in the pVM
-pub struct AuthenticatedConnectionState {
+pub struct AuthenticatedConnectionInfo {
     /// Instance id of the pvm
     pub instance_id: Arc<InstanceIdentifier>,
     /// Transport id of the pvm
@@ -70,7 +70,7 @@ pub struct AuthenticatedConnectionState {
     pub authorized_clients: Vec<AuthorizedClient>,
 }
 
-impl AuthenticatedConnectionState {
+impl AuthenticatedConnectionInfo {
     /// Populate the information to be stored in-memory in the connection state
     pub fn new(
         instance_id: Arc<InstanceIdentifier>,
@@ -589,4 +589,14 @@ impl Default for MemoryLimits {
             max_clients_per_pvm: MAX_AUTHORIZED_CLIENTS_PER_CONNECTION,
         }
     }
+}
+
+/// Enum representing the different stages of authentication life cycle for a `RpcConnection`
+pub enum ConnectionAuthState {
+    /// None of the steps of authentication has been completed
+    None,
+    /// Step 1 of phase 1 (i.e. `initAuthentication` has been completed successfully)
+    AuthenticationStarted,
+    /// Phase 1 has been completed successfully
+    AuthenticationCompleted(AuthenticatedConnectionInfo),
 }
