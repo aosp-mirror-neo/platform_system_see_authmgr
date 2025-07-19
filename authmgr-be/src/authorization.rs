@@ -20,11 +20,12 @@
 use crate::{
     am_err,
     data_structures::{
-        AuthStartedPvm, AuthStartedPvms, AuthenticatedConnectionState, AuthenticatedPvms,
+        AuthStartedPvm, AuthStartedPvms, AuthenticatedConnectionInfo, AuthenticatedPvms,
         AuthorizedClient, AuthorizedClientFullDiceArtifacts, AuthorizedClientsGlobalList, ClientId,
-        DiceArtifacts, MemoryLimits, PendingClientAuthorization, PendingClientAuthorizations,
-        PersistentClientContext, PersistentInstanceContext, PolicyMatchingResult,
-        VERSION_PERSISTENT_CLIENT_CONTEXT, VERSION_PERSISTENT_INSTANCE_CONTEXT,
+        ConnectionAuthState, DiceArtifacts, MemoryLimits, PendingClientAuthorization,
+        PendingClientAuthorizations, PersistentClientContext, PersistentInstanceContext,
+        PolicyMatchingResult, VERSION_PERSISTENT_CLIENT_CONTEXT,
+        VERSION_PERSISTENT_INSTANCE_CONTEXT,
     },
     error::{Error, ErrorCode, PolicyMatchingError},
     traits::{Device, PersistentStorage, RawConnection, RpcConnection},
@@ -119,17 +120,25 @@ impl AuthMgrBE {
     /// Step 1 of phase 1
     pub fn init_authentication(
         &mut self,
-        connection: &dyn RpcConnection,
+        connection: &mut dyn RpcConnection,
         cert_chain: &[u8],
         ext_instance_id: Option<&[u8]>,
     ) -> Result<Challenge, Error> {
-        // Check if the connection is already authenticated by retrieving the connection state
-        if connection.get_authenticated_state()?.is_some() {
-            return Err(am_err!(
-                InstanceAlreadyAuthenticated,
-                "connection is already authenticated"
-            ));
-        }
+        match connection.current_auth_state()? {
+            ConnectionAuthState::None => (),
+            ConnectionAuthState::AuthenticationStarted => {
+                return Err(am_err!(
+                    AuthenticationAlreadyStarted,
+                    "connection is already started authentication"
+                ));
+            }
+            ConnectionAuthState::AuthenticationCompleted(_) => {
+                return Err(am_err!(
+                    InstanceAlreadyAuthenticated,
+                    "connection is already authenticated"
+                ));
+            }
+        };
 
         // Retrieve the transport ID
         let transport_id = connection.get_peer_transport_id()?;
@@ -180,6 +189,7 @@ impl AuthMgrBE {
         }
         let mut challenge = [0; 32];
         self.crypto.rng.fill_bytes(&mut challenge);
+        connection.set_current_auth_state(ConnectionAuthState::AuthenticationStarted);
         // TODO: b/401550040. Use fallible allocation when Rust supports it.
         self.auth_started_pvms.insert(AuthStartedPvm {
             transport_id,
@@ -197,12 +207,20 @@ impl AuthMgrBE {
         signed_response: &[u8],
         dice_policy: &[u8],
     ) -> Result<(), Error> {
-        // Check if the connection is already authenticated by retrieving the connection state
-        if connection.get_authenticated_state()?.is_some() {
-            return Err(am_err!(
-                InstanceAlreadyAuthenticated,
-                "connection is already authenticated"
-            ));
+        match connection.current_auth_state()? {
+            ConnectionAuthState::None => {
+                return Err(am_err!(
+                    AuthenticationNotStarted,
+                    "connection has not started authentication"
+                ));
+            }
+            ConnectionAuthState::AuthenticationStarted => {}
+            ConnectionAuthState::AuthenticationCompleted(_) => {
+                return Err(am_err!(
+                    InstanceAlreadyAuthenticated,
+                    "connection is already authenticated"
+                ));
+            }
         }
 
         // Retrieve the transport ID
@@ -260,7 +278,7 @@ impl AuthMgrBE {
             return Err(am_err!(Unimplemented, "Non persistent instances are not yet supported."));
         };
         // Construct the connection state
-        let connection_state = AuthenticatedConnectionState::new(
+        let connection_state = AuthenticatedConnectionInfo::new(
             Arc::clone(&auth_started_entry.instance_id),
             auth_started_entry.transport_id,
             instance_seq_number,
@@ -272,9 +290,10 @@ impl AuthMgrBE {
             is_persistent,
             self.memory_limits.max_clients_per_pvm,
         )?;
-        connection.store_authenticated_state(connection_state)?;
         auth_started_entry
             .mark_as_authenticated(&mut self.auth_started_pvms, &mut self.auth_completed_pvms)?;
+        connection
+            .set_current_auth_state(ConnectionAuthState::AuthenticationCompleted(connection_state));
         Ok(())
     }
 
@@ -314,11 +333,16 @@ impl AuthMgrBE {
         client_dice_cert: &[u8],
         client_dice_policy: &[u8],
     ) -> Result<(), Error> {
-        // Check whether the connection is already authenticated.
-        let state = connection.get_mutable_authenticated_state()?.ok_or(am_err!(
-            ConnectionNotAuthenticated,
-            "phase 2 of the AuthMgr protocol can only be invoked on an authenticated connection."
-        ))?;
+        let state = match connection.current_mut_auth_state()? {
+            ConnectionAuthState::AuthenticationCompleted(ref mut auth_state) => auth_state,
+            _ => {
+                return Err(am_err!(
+                    ConnectionNotAuthenticated,
+                    "phase 2 of the AuthMgr protocol can only be invoked on an authenticated connection."
+                ));
+            }
+        };
+
         // Retrieve the new connection corresponding to this request from pending authorizations
         let pending_authorization =
             self.pending_client_authorizations.take(state.transport_id, token).ok_or(am_err!(
@@ -412,11 +436,18 @@ impl AuthMgrBE {
         connection: &mut dyn RpcConnection,
     ) -> Result<(), Error> {
         let transport_id = connection.get_peer_transport_id()?;
-        self.auth_started_pvms.remove_via_transport_id(transport_id);
-        self.auth_completed_pvms.remove_via_transport_id(transport_id);
-        self.pending_client_authorizations.remove_via_transport_id(transport_id);
-        self.authorized_clients.remove_via_transport_id(transport_id);
-        connection.remove_authenticated_state()?;
+        match connection.current_auth_state()? {
+            ConnectionAuthState::None => {}
+            ConnectionAuthState::AuthenticationStarted => {
+                self.auth_started_pvms.remove_via_transport_id(transport_id);
+            }
+            ConnectionAuthState::AuthenticationCompleted(_) => {
+                self.auth_completed_pvms.remove_via_transport_id(transport_id);
+                self.pending_client_authorizations.remove_via_transport_id(transport_id);
+                self.authorized_clients.remove_via_transport_id(transport_id);
+                connection.set_current_auth_state(ConnectionAuthState::None);
+            }
+        }
         Ok(())
     }
 
@@ -649,7 +680,7 @@ impl AuthMgrBE {
     // trusted services for matching DICE chain and DICE policies of the clients.
     fn update_global_list_of_authorized_clients(
         &mut self,
-        state: &AuthenticatedConnectionState,
+        state: &AuthenticatedConnectionInfo,
         client_seq_number: i64,
         client_id: &Arc<ClientId>,
         dice_leaf: &DiceChainEntry,
