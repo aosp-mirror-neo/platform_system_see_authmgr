@@ -292,8 +292,9 @@ impl AuthMgrBE {
         )?;
         auth_started_entry
             .mark_as_authenticated(&mut self.auth_started_pvms, &mut self.auth_completed_pvms)?;
-        connection
-            .set_current_auth_state(ConnectionAuthState::AuthenticationCompleted(connection_state));
+        connection.set_current_auth_state(ConnectionAuthState::AuthenticationCompleted(Box::new(
+            connection_state,
+        )));
         Ok(())
     }
 

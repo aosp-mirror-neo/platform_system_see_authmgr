@@ -598,5 +598,5 @@ pub enum ConnectionAuthState {
     /// Step 1 of phase 1 (i.e. `initAuthentication` has been completed successfully)
     AuthenticationStarted,
     /// Phase 1 has been completed successfully
-    AuthenticationCompleted(AuthenticatedConnectionInfo),
+    AuthenticationCompleted(Box<AuthenticatedConnectionInfo>),
 }
