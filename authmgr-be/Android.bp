@@ -26,6 +26,7 @@ rust_library {
         "libauthgraph_core",
         "libauthmgr_common",
         "libcoset",
+        "libhex",
         "liblog_rust",
         "libthiserror",
     ],
@@ -42,6 +43,7 @@ rust_library_rlib {
         "libauthgraph_core_nostd",
         "libauthmgr_common_nostd",
         "libcoset_nostd",
+        "libhex_nostd",
         "liblog_rust_nostd",
         "libthiserror_nostd",
     ],
@@ -50,7 +52,7 @@ rust_library_rlib {
 rust_library {
     name: "libauthmgr_be_test",
     crate_name: "authmgr_be_test",
-    srcs: ["src/tests.rs"],
+    srcs: ["src/tests_utils.rs"],
     host_supported: true,
     rustlibs: [
         "libauthgraph_core",
@@ -60,5 +62,22 @@ rust_library {
         "libcoset",
         "libdice_policy_builder",
         "liblog_rust",
+    ],
+}
+
+rust_test {
+    name: "libauthmgr_be_unit_test",
+    crate_name: "authmgr_be_unit_test",
+    srcs: ["src/lib.rs"],
+    host_supported: true,
+    test_suites: ["general-tests"],
+    rustlibs: [
+        "libauthgraph_core",
+        "libauthmgr_be",
+        "libauthmgr_common",
+        "libcoset",
+        "libhex",
+        "liblog_rust",
+        "libthiserror",
     ],
 }

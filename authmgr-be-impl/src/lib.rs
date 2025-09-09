@@ -63,17 +63,6 @@ impl Device for AuthMgrBeDevice {
         Ok(self.transport_id)
     }
 
-    /// Secure storage invariant: we cannot allow a non-persistent pVM connect to secure storage
-    /// without the secure storage knowing that it is a non-persistent client. Therefore, the
-    /// AuthMgr BE should know whether a given pVM is persistent. In the first version of the
-    /// trusted HAL project, we only support persistent pVM clients, therefore, in the first
-    /// version, this could simply return true. When non-persistent pVMs are supported, it is
-    /// expected that the AuthMgr BE learns via some out-of-band mechanism the instance ids of the
-    /// peristence pVMs on the device.
-    fn is_persistent_instance(&self, instance_id: &InstanceIdentifier) -> Result<bool, Error> {
-        Ok(self.allowed_persistent_instances.contains_key(instance_id))
-    }
-
     /// Connect to the trusted service identified by `service_name` and hand over the client
     /// connection along with the unique client id.
     fn handover_client_connection(

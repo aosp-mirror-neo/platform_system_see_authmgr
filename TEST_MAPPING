@@ -1,0 +1,13 @@
+{
+  "postsubmit": [
+    {
+      "name": "libauthmgr_common_unit_test"
+    },
+    {
+      "name": "libauthmgr_be_unit_test"
+    },
+    {
+      "name": "libauthmgr_be_protocol_test"
+    }
+  ]
+}

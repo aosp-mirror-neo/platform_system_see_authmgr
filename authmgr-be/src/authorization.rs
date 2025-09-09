@@ -15,20 +15,18 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 //! Reference implementation of the `IAuthMgrAuthorization.aidl` for the AuthMgr Backend.
-// TODO: remove this
-#![allow(dead_code)]
 use crate::{
     am_err,
     data_structures::{
         AuthStartedPvm, AuthStartedPvms, AuthenticatedConnectionInfo, AuthenticatedPvms,
         AuthorizedClient, AuthorizedClientFullDiceArtifacts, AuthorizedClientsGlobalList, ClientId,
-        ConnectionAuthState, DiceArtifacts, MemoryLimits, PendingClientAuthorization,
-        PendingClientAuthorizations, PersistentClientContext, PersistentInstanceContext,
-        PolicyMatchingResult, VERSION_PERSISTENT_CLIENT_CONTEXT,
+        ClientInfoAtRollbackProtection, ConnectionAuthState, DiceArtifacts, MemoryLimits,
+        PendingClientAuthorization, PendingClientAuthorizations, PersistentClientContext,
+        PersistentInstanceContext, PolicyMatchingResult, VERSION_PERSISTENT_CLIENT_CONTEXT,
         VERSION_PERSISTENT_INSTANCE_CONTEXT,
     },
     error::{Error, ErrorCode, PolicyMatchingError},
-    traits::{Device, PersistentStorage, RawConnection, RpcConnection},
+    traits::{Device, PersistentStorage, RawConnection, RpcConnection, WriteMode},
     try_to_vec,
 };
 use alloc::boxed::Box;
@@ -77,7 +75,7 @@ impl LatestGlobalSeqNum {
         persistent_storage: &mut dyn PersistentStorage,
     ) -> Result<i64, Error> {
         let current_global_seq_num = self.0;
-        self.0 = persistent_storage.increment_global_sequence_number()?;
+        self.0 = increment_global_sequence_number(persistent_storage)?;
         Ok(current_global_seq_num)
     }
 }
@@ -103,7 +101,7 @@ impl AuthMgrBE {
         // If this is the first time the AuthMgr BE is running after the first boot of the device,
         // initialize the global sequence number, otherwise, read it from the AuthMgr BE's storage
         let latest_global_sequence_number =
-            LatestGlobalSeqNum(persistent_storage.get_or_create_global_sequence_number()?);
+            LatestGlobalSeqNum(get_or_create_global_sequence_number(&mut *persistent_storage)?);
         Ok(AuthMgrBE {
             crypto,
             device,
@@ -266,7 +264,7 @@ impl AuthMgrBE {
             })?;
 
         let given_dice_policy = Arc::new(Policy(try_to_vec(dice_policy)?));
-        let is_persistent = self.device.is_persistent_instance(&auth_started_entry.instance_id)?;
+        let is_persistent = is_persistent_instance(&auth_started_entry.instance_id)?;
         let instance_seq_number = if is_persistent {
             self.handle_instance_in_persistent_storage(
                 &auth_started_entry.instance_id,
@@ -376,7 +374,6 @@ impl AuthMgrBE {
                 let policy_need_update = !(given_policy == client.policy);
                 self.enforce_rollback_protection_for_client_in_cache(
                     instance_seq_number,
-                    is_persistent,
                     client,
                     &given_dice_cert,
                     &given_policy,
@@ -491,14 +488,13 @@ impl AuthMgrBE {
         given_policy: &Arc<Policy>,
         dice_chain: &CertChain,
     ) -> Result<i64, Error> {
-        match self.persistent_storage.read_instance_context(instance_id)? {
-            Some(instance_ctx) => {
+        match read_persistent_instance_context(&*self.persistent_storage, instance_id)? {
+            Some(mut instance_ctx) => {
                 self.enforce_rollback_protection_for_pvm(
                     instance_id,
                     given_policy,
-                    &instance_ctx.dice_policy,
+                    &mut instance_ctx,
                     dice_chain,
-                    true,
                 )?;
                 Ok(instance_ctx.sequence_number)
             }
@@ -518,9 +514,10 @@ impl AuthMgrBE {
                 let sequence_number = self
                     .latest_global_sequence_number
                     .fetch_and_increment(&mut *self.persistent_storage)?;
-                self.persistent_storage.create_instance_context(
+                write_persistent_instance_context(
+                    &mut *self.persistent_storage,
                     instance_id,
-                    PersistentInstanceContext {
+                    &PersistentInstanceContext {
                         version: VERSION_PERSISTENT_INSTANCE_CONTEXT,
                         sequence_number,
                         dice_policy: Arc::clone(given_policy),
@@ -531,14 +528,13 @@ impl AuthMgrBE {
         }
     }
 
-    // A helper function for enforcing rollback protection on a pvm instance.
+    // A helper function for enforcing rollback protection on a pvm instance.aa
     fn enforce_rollback_protection_for_pvm(
         &mut self,
         instance_id: &Arc<InstanceIdentifier>,
         given_policy: &Arc<Policy>,
-        stored_policy: &Policy,
+        instance_ctx: &mut PersistentInstanceContext,
         dice_chain: &CertChain,
-        is_persistent: bool,
     ) -> Result<(), Error> {
         // First, match the given policy and the dice chain
         if !match_dice_chain_with_policy(dice_chain, given_policy)? {
@@ -547,23 +543,19 @@ impl AuthMgrBE {
                 "the DICE chain doesn't match the given DICE policy."
             ));
         }
-        if *stored_policy != **given_policy {
-            if !match_dice_chain_with_policy(dice_chain, stored_policy)? {
+        if *instance_ctx.dice_policy != **given_policy {
+            if !match_dice_chain_with_policy(dice_chain, &instance_ctx.dice_policy)? {
                 return Err(am_err!(
                     DicePolicyMatchingFailed,
                     "the DICE chain doesn't match the stored DICE policy."
                 ));
             }
-            if is_persistent {
-                self.persistent_storage
-                    .update_instance_policy_in_storage(instance_id, given_policy)?;
-            } else {
-                // TODO: b/399707150
-                return Err(am_err!(
-                    Unimplemented,
-                    "Non persistent instances are not yet supported."
-                ));
-            }
+            update_persistent_instance_policy(
+                &mut *self.persistent_storage,
+                instance_id,
+                given_policy,
+                instance_ctx,
+            )?;
         }
         Ok(())
     }
@@ -572,24 +564,17 @@ impl AuthMgrBE {
     fn enforce_rollback_protection_for_client_in_cache(
         &mut self,
         instance_seq_number: i64,
-        is_persistent: bool,
         authorized_client: &mut AuthorizedClient,
         given_dice_cert: &DiceChainEntry,
         given_policy: &Arc<Policy>,
     ) -> Result<(), Error> {
         self.enforce_rollback_protection_for_client(
             instance_seq_number,
-            &authorized_client.client_id,
+            &Arc::clone(&authorized_client.client_id),
             given_dice_cert,
             given_policy,
-            &authorized_client.policy,
-            is_persistent,
-        )?;
-        if *authorized_client.policy != **given_policy {
-            // Update the policy in the cache as well
-            authorized_client.update_policy(given_policy);
-        }
-        Ok(())
+            &mut ClientInfoAtRollbackProtection::FromCache(authorized_client),
+        )
     }
 
     fn handle_client_in_persistent_storage(
@@ -599,15 +584,18 @@ impl AuthMgrBE {
         given_dice_cert: &DiceChainEntry,
         given_policy: &Arc<Policy>,
     ) -> Result<i64, Error> {
-        match self.persistent_storage.read_client_context(instance_seq_number, client_id)? {
-            Some(client_ctx) => {
+        match read_persistent_client_context(
+            &*self.persistent_storage,
+            instance_seq_number,
+            client_id,
+        )? {
+            Some(mut client_ctx) => {
                 self.enforce_rollback_protection_for_client(
                     instance_seq_number,
                     client_id,
                     given_dice_cert,
                     given_policy,
-                    &client_ctx.dice_policy,
-                    true,
+                    &mut ClientInfoAtRollbackProtection::FromPersistentStorage(&mut client_ctx),
                 )?;
                 Ok(client_ctx.sequence_number)
             }
@@ -621,10 +609,11 @@ impl AuthMgrBE {
                 let sequence_number = self
                     .latest_global_sequence_number
                     .fetch_and_increment(&mut *self.persistent_storage)?;
-                self.persistent_storage.create_client_context(
+                write_persistent_client_context(
+                    &mut *self.persistent_storage,
                     instance_seq_number,
                     client_id,
-                    PersistentClientContext {
+                    &PersistentClientContext {
                         version: VERSION_PERSISTENT_CLIENT_CONTEXT,
                         sequence_number,
                         dice_policy: Arc::clone(given_policy),
@@ -641,8 +630,7 @@ impl AuthMgrBE {
         client_id: &Arc<ClientId>,
         given_dice_cert: &DiceChainEntry,
         given_policy: &Arc<Policy>,
-        stored_policy: &Policy,
-        is_persistent: bool,
+        client_info: &mut ClientInfoAtRollbackProtection,
     ) -> Result<(), Error> {
         // First, match the given policy and the DICE certificate
         if !match_dice_cert_with_policy(given_dice_cert, given_policy)? {
@@ -651,27 +639,22 @@ impl AuthMgrBE {
                 "the client's DICE leaf certificate doesn't match the given DICE policy"
             ));
         }
-        if **given_policy != *stored_policy {
-            if !match_dice_cert_with_policy(given_dice_cert, stored_policy)? {
+        let policy_updated = client_info.match_policy(given_policy);
+        if policy_updated {
+            if !match_dice_cert_with_policy(given_dice_cert, client_info.get_policy()?)? {
                 return Err(am_err!(
                     DicePolicyMatchingFailed,
                     "the client's DICE leaf certificate doesn't match the stored DICE policy"
                 ));
             }
             // Update the policy in the storage
-            if is_persistent {
-                self.persistent_storage.update_client_policy_in_storage(
-                    instance_seq_number,
-                    client_id,
-                    given_policy,
-                )?;
-            } else {
-                // TODO: b/399707150
-                return Err(am_err!(
-                    Unimplemented,
-                    "Non persistent instances are not yet supported."
-                ));
-            }
+            update_persistent_client_policy(
+                &mut *self.persistent_storage,
+                instance_seq_number,
+                client_id,
+                given_policy,
+                client_info,
+            )?;
         }
         Ok(())
     }
@@ -726,5 +709,146 @@ impl AuthMgrBE {
             }
         }
         Ok(())
+    }
+}
+
+// A helper function to distinguish persistent instances from non-persistent instances, given the
+// instance identifier.
+// Secure storage invariant: we cannot allow a non-persistent pVM connect to secure storage
+// without the secure storage knowing that it is a non-persistent client. Therefore, the
+// AuthMgr BE should know whether a given pVM is persistent or not.
+// TODO: b/417493963: Implement this based on the instance id partitioning scheme.
+fn is_persistent_instance(_instance_id: &InstanceIdentifier) -> Result<bool, Error> {
+    Ok(true)
+}
+
+// A helper function to read the global sequence number from the persistent storage. If reading for
+// the first time, initialize the global sequence number to zero.
+fn get_or_create_global_sequence_number(
+    persistent_storage: &mut dyn PersistentStorage,
+) -> Result<i64, Error> {
+    persistent_storage.read(persistent_storage.get_global_seq_num_storage_path())?.map_or_else(
+        || {
+            let global_seq_num_init: i64 = 0;
+            persistent_storage.write(
+                persistent_storage.get_global_seq_num_storage_path(),
+                &global_seq_num_init.to_ne_bytes(),
+                WriteMode::CreateExclusive,
+            )?;
+            Ok(global_seq_num_init)
+        },
+        |v| {
+            let seq_num = i64::from_ne_bytes(v.as_slice().try_into()?);
+            Ok(seq_num)
+        },
+    )
+}
+
+// A helper function to increment the  global sequence number in the persistent storage, using the
+// storage trait's methods.
+fn increment_global_sequence_number(
+    persistent_storage: &mut dyn PersistentStorage,
+) -> Result<i64, Error> {
+    let current = persistent_storage
+        .read(persistent_storage.get_global_seq_num_storage_path())?
+        .map_or_else(
+            || Err(am_err!(InternalError, "global sequence number is not initialized")),
+            |v| Ok::<i64, Error>(i64::from_ne_bytes(v.as_slice().try_into()?)),
+        )?;
+    let incremented = current + 1;
+    persistent_storage.write(
+        persistent_storage.get_global_seq_num_storage_path(),
+        &incremented.to_ne_bytes(),
+        WriteMode::OverwriteExisting,
+    )?;
+    Ok(incremented)
+}
+
+// A helper function to write a new instance context to the persistent storage.
+fn write_persistent_instance_context(
+    storage: &mut dyn PersistentStorage,
+    instance_id: &Arc<InstanceIdentifier>,
+    instance_ctx: &PersistentInstanceContext,
+) -> Result<(), Error> {
+    let path = storage.build_storage_file_path_for_instance(instance_id);
+    let ctx_bytes = instance_ctx.to_bytes()?;
+    storage.write(&path, ctx_bytes.as_slice(), WriteMode::CreateExclusive)
+}
+
+// A helper function to read the instance context from the persistent storage.
+fn read_persistent_instance_context(
+    storage: &dyn PersistentStorage,
+    instance_id: &Arc<InstanceIdentifier>,
+) -> Result<Option<PersistentInstanceContext>, Error> {
+    let path = storage.build_storage_file_path_for_instance(instance_id);
+    storage
+        .read(&path)?
+        .map_or_else(|| Ok(None), |data| Ok(Some(PersistentInstanceContext::from_bytes(&data)?)))
+}
+
+// A helper function to update the instance's DICE policy in the persistent storage.
+fn update_persistent_instance_policy(
+    storage: &mut dyn PersistentStorage,
+    instance_id: &Arc<InstanceIdentifier>,
+    latest_dice_policy: &Arc<Policy>,
+    instance_ctx: &mut PersistentInstanceContext,
+) -> Result<(), Error> {
+    let path = storage.build_storage_file_path_for_instance(instance_id);
+    instance_ctx.dice_policy = Arc::clone(latest_dice_policy);
+    let ctx_bytes = instance_ctx.to_bytes()?;
+    storage.write(&path, ctx_bytes.as_slice(), WriteMode::OverwriteExisting)
+}
+
+// A helper function to write a new client context to the persistent storage.
+fn write_persistent_client_context(
+    storage: &mut dyn PersistentStorage,
+    instance_seq_number: i64,
+    client_id: &Arc<ClientId>,
+    client_ctx: &PersistentClientContext,
+) -> Result<(), Error> {
+    let path = storage.build_storage_file_path_for_client(instance_seq_number, client_id);
+    let ctx_bytes = client_ctx.to_bytes()?;
+    storage.write(&path, ctx_bytes.as_slice(), WriteMode::CreateExclusive)
+}
+
+// A helper function to read the client context from the persistent storage.
+fn read_persistent_client_context(
+    storage: &dyn PersistentStorage,
+    instance_seq_number: i64,
+    client_id: &Arc<ClientId>,
+) -> Result<Option<PersistentClientContext>, Error> {
+    let path = storage.build_storage_file_path_for_client(instance_seq_number, client_id);
+    storage
+        .read(&path)?
+        .map_or_else(|| Ok(None), |data| Ok(Some(PersistentClientContext::from_bytes(&data)?)))
+}
+
+// A helper function to update the client's DICE policy in the persistent storage.
+fn update_persistent_client_policy(
+    storage: &mut dyn PersistentStorage,
+    instance_seq_number: i64,
+    client_id: &Arc<ClientId>,
+    latest_dice_policy: &Arc<Policy>,
+    client_info: &mut ClientInfoAtRollbackProtection,
+) -> Result<(), Error> {
+    match client_info {
+        ClientInfoAtRollbackProtection::FromPersistentStorage(client_ctx) => {
+            let path = storage.build_storage_file_path_for_client(instance_seq_number, client_id);
+            client_ctx.dice_policy = Arc::clone(latest_dice_policy);
+            let ctx_bytes = client_ctx.to_bytes()?;
+            storage.write(&path, ctx_bytes.as_slice(), WriteMode::OverwriteExisting)
+        }
+        ClientInfoAtRollbackProtection::FromCache(authorized_client) => {
+            let path = storage.build_storage_file_path_for_client(instance_seq_number, client_id);
+            let mut client_ctx =
+                read_persistent_client_context(storage, instance_seq_number, client_id)?.ok_or(
+                    am_err!(InternalError, "storage not found for client context at: {:?}", path),
+                )?;
+            client_ctx.dice_policy = Arc::clone(latest_dice_policy);
+            let ctx_bytes = client_ctx.to_bytes()?;
+            storage.write(&path, ctx_bytes.as_slice(), WriteMode::OverwriteExisting)?;
+            authorized_client.update_policy(latest_dice_policy);
+            Ok(())
+        }
     }
 }
