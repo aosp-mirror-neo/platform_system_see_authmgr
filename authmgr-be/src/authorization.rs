@@ -145,17 +145,16 @@ impl AuthMgrBE {
         let cert_chain = CertChain::from_slice(cert_chain)
             .map_err(|_e| am_err!(InvalidDiceCertChain, "failed to decode the DICE cert chain."))?;
 
-        // First, extract the instance identifier from the DICE chain. Only if it is not present,
-        // check if a valid instance identifier is provided via the optional parameter
-        let instance_id: InstanceIdentifier =
-            match cert_chain.extract_instance_identifier_in_guest_os_entry()? {
-                Some(id) => id,
-                None => ext_instance_id.map(|id| id.to_vec()).ok_or(am_err!(
-                    InvalidInstanceIdentifier,
-                    "Instance identifier is neither present in the DICE cert chain,
-                        nor in the optional argument"
-                ))?,
-            };
+        // Check if an instance id is provided in the optional parameter. If it is not present,
+        // extract the instance id from the DICE chain.
+        let instance_id: InstanceIdentifier = match ext_instance_id {
+            Some(instance_id) => instance_id.to_vec(),
+            None => cert_chain.extract_instance_identifier_in_guest_os_entry()?.ok_or(am_err!(
+                InvalidInstanceIdentifier,
+                "Instance identifier is neither present in
+                        the argument, nor in the DICE cert chain."
+            ))?,
+        };
 
         // Check for duplicated authentication attempts.
         // We check with the instance id and transport id separately, and not with the combination
