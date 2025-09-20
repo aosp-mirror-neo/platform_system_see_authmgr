@@ -69,6 +69,7 @@ rust_test {
         "libcoset",
         "libdice_policy",
         "libdice_policy_builder",
+        "liblog_rust",
         "libnum_traits",
         "libthiserror",
     ],

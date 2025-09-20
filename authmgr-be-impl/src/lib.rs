@@ -25,9 +25,7 @@ use authgraph_boringssl::{ec::BoringEcDsa, BoringRng};
 use authgraph_core::key::{CertChain, InstanceIdentifier, Policy};
 use authmgr_be::error::Error;
 use authmgr_be::traits::{Device, RawConnection};
-use authmgr_common::{
-    match_dice_chain_with_policy, signed_connection_request::TransportID, CryptoTraitImpl,
-};
+use authmgr_common::{signed_connection_request::TransportID, CryptoTraitImpl};
 use std::collections::HashMap;
 
 pub mod mock_storage;
@@ -77,16 +75,13 @@ impl Device for AuthMgrBeDevice {
     }
 
     /// Check whether the persistent instance with the given instance id and the dice cert chain is
-    /// allowed to be created.s
+    /// allowed to be created. Return true in the mock implementation of the trait.
     fn is_persistent_instance_creation_allowed(
         &self,
-        instance_id: &InstanceIdentifier,
-        dice_chain: &CertChain,
+        _instance_id: &InstanceIdentifier,
+        _dice_chain: &CertChain,
     ) -> Result<bool, Error> {
-        Ok(match_dice_chain_with_policy(
-            dice_chain,
-            self.allowed_persistent_instances.get(instance_id).unwrap(),
-        )?)
+        Ok(true)
     }
 }
 
