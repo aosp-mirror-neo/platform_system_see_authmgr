@@ -73,9 +73,13 @@ rust_test {
     test_suites: ["general-tests"],
     rustlibs: [
         "libauthgraph_core",
+        "libauthgraph_core_test",
         "libauthmgr_be",
         "libauthmgr_common",
+        "libauthmgr_common_util",
         "libcoset",
+        "libdice_policy",
+        "libdice_policy_builder",
         "libhex",
         "liblog_rust",
         "libthiserror",

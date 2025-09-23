@@ -136,7 +136,15 @@ pub enum PolicyMatchingError {
     #[error("memory allocation failed due to: {0}")]
     MemoryAllocationFailed(#[from] alloc::collections::TryReserveError),
 
-    /// AuthMgr error
+    /// Invalid DICE Policy
+    #[error("invalid DICE policy")]
+    InvalidDicePolicy,
+
+    /// AuthMgrCommonError
     #[error("authmgr error: {0}")]
     AuthMgrCommonError(#[from] AMError),
+
+    /// Internal error
+    #[error("internal error")]
+    InternalError,
 }

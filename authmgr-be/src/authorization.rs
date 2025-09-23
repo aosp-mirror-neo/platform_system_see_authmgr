@@ -31,13 +31,15 @@ use crate::{
 };
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use authgraph_core::key::{CertChain, DiceChainEntry, InstanceIdentifier, Policy};
+use alloc::vec::Vec;
+use authgraph_core::key::{CertChain, DiceChainEntry, InstanceIdentifier};
 use authmgr_common::{
     extend_dice_policy_with, match_dice_cert_with_policy, match_dice_chain_with_policy,
     signed_connection_request::{Challenge, ConnectionRequest},
-    CryptoTraitImpl, Token,
+    CryptoTraitImpl, DicePolicy, Token,
 };
 use coset::CborSerializable;
+use log::error;
 
 /// Data structure encapsulating AuthMgr backend.
 /// Note that we assume the use of AuthMgrBE in single threaded environments. It is planned for the
@@ -240,6 +242,11 @@ impl AuthMgrBE {
                 "duplicated authentication attempt!"
             ));
         }
+
+        let given_dice_policy = Arc::new(DicePolicy::from_slice(dice_policy).map_err(|e| {
+            am_err!(InvalidDicePolicy, "failed to decode the DICE policy: {:?}", e)
+        })?);
+
         // Validate the DICE cert chain and retrieve the signature verification key
         let sig_verification_key =
             (*auth_started_entry.cert_chain).validate(&*self.crypto.ecdsa).map_err(|_e| {
@@ -262,7 +269,6 @@ impl AuthMgrBE {
                 )
             })?;
 
-        let given_dice_policy = Arc::new(Policy(try_to_vec(dice_policy)?));
         let is_persistent = is_persistent_instance(&auth_started_entry.instance_id)?;
         let instance_seq_number = if is_persistent {
             self.handle_instance_in_persistent_storage(
@@ -349,9 +355,10 @@ impl AuthMgrBE {
                 state.transport_id,
                 token
             ))?;
-
+        let given_policy = Arc::new(DicePolicy::from_slice(client_dice_policy).map_err(|e| {
+            am_err!(InvalidDicePolicy, "failed to decode the DICE policy: {:?}", e)
+        })?);
         let client_id = Arc::new(ClientId(try_to_vec(client_id)?));
-        let given_policy = Arc::new(Policy(try_to_vec(client_dice_policy)?));
         let given_dice_cert = DiceChainEntry::from_slice(client_dice_cert)?;
         let is_persistent = state.is_persistent;
         let instance_seq_number = state.instance_seq_number;
@@ -451,11 +458,14 @@ impl AuthMgrBE {
     /// Retrieve the DICE policy for a client identified by the client sequence number, if the
     /// client sequence number is found in the AuthMgr-BE's in-memory list
     /// (i.e. AuthorizedClientsGlobalList).
-    pub fn get_policy(&self, client_seq_number: i64) -> Result<Policy, PolicyMatchingError> {
-        self.authorized_clients
-            .get(client_seq_number)
-            .map(|client| (*client.full_dice_artifacts.policy).clone())
-            .ok_or(PolicyMatchingError::ClientSeqNumNotFound)
+    pub fn get_policy(&self, client_seq_number: i64) -> Result<Vec<u8>, PolicyMatchingError> {
+        match self.authorized_clients.get(client_seq_number) {
+            Some(client) => (*client.full_dice_artifacts.policy).clone().to_vec().map_err(|e| {
+                error!("failed to encode the DICE policy: {:?}", e);
+                PolicyMatchingError::InternalError
+            }),
+            None => Err(PolicyMatchingError::ClientSeqNumNotFound),
+        }
     }
 
     /// Match a given policy against a client's latest DICE chain and compare the given policy with
@@ -465,7 +475,10 @@ impl AuthMgrBE {
         client_seq_number: i64,
         given_policy: &[u8],
     ) -> Result<PolicyMatchingResult, PolicyMatchingError> {
-        let given_policy = Policy(try_to_vec(given_policy)?);
+        let given_policy = DicePolicy::from_slice(given_policy).map_err(|e| {
+            error!("failed to decode the DICE policy: {:?}", e);
+            PolicyMatchingError::InvalidDicePolicy
+        })?;
         let client = self
             .authorized_clients
             .get(client_seq_number)
@@ -484,7 +497,7 @@ impl AuthMgrBE {
     fn handle_instance_in_persistent_storage(
         &mut self,
         instance_id: &Arc<InstanceIdentifier>,
-        given_policy: &Arc<Policy>,
+        given_policy: &Arc<DicePolicy>,
         dice_chain: &CertChain,
     ) -> Result<i64, Error> {
         match read_persistent_instance_context(&*self.persistent_storage, instance_id)? {
@@ -531,7 +544,7 @@ impl AuthMgrBE {
     fn enforce_rollback_protection_for_pvm(
         &mut self,
         instance_id: &Arc<InstanceIdentifier>,
-        given_policy: &Arc<Policy>,
+        given_policy: &Arc<DicePolicy>,
         instance_ctx: &mut PersistentInstanceContext,
         dice_chain: &CertChain,
     ) -> Result<(), Error> {
@@ -565,7 +578,7 @@ impl AuthMgrBE {
         instance_seq_number: i64,
         authorized_client: &mut AuthorizedClient,
         given_dice_cert: &DiceChainEntry,
-        given_policy: &Arc<Policy>,
+        given_policy: &Arc<DicePolicy>,
     ) -> Result<(), Error> {
         self.enforce_rollback_protection_for_client(
             instance_seq_number,
@@ -581,7 +594,7 @@ impl AuthMgrBE {
         instance_seq_number: i64,
         client_id: &Arc<ClientId>,
         given_dice_cert: &DiceChainEntry,
-        given_policy: &Arc<Policy>,
+        given_policy: &Arc<DicePolicy>,
     ) -> Result<i64, Error> {
         match read_persistent_client_context(
             &*self.persistent_storage,
@@ -628,7 +641,7 @@ impl AuthMgrBE {
         instance_seq_number: i64,
         client_id: &Arc<ClientId>,
         given_dice_cert: &DiceChainEntry,
-        given_policy: &Arc<Policy>,
+        given_policy: &Arc<DicePolicy>,
         client_info: &mut ClientInfoAtRollbackProtection,
     ) -> Result<(), Error> {
         // First, match the given policy and the DICE certificate
@@ -667,7 +680,7 @@ impl AuthMgrBE {
         client_seq_number: i64,
         client_id: &Arc<ClientId>,
         dice_leaf: &DiceChainEntry,
-        given_policy: &Arc<Policy>,
+        given_policy: &Arc<DicePolicy>,
         policy_need_update: bool,
     ) -> Result<(), Error> {
         match self.authorized_clients.get_mut(client_seq_number) {
@@ -789,7 +802,7 @@ fn read_persistent_instance_context(
 fn update_persistent_instance_policy(
     storage: &mut dyn PersistentStorage,
     instance_id: &Arc<InstanceIdentifier>,
-    latest_dice_policy: &Arc<Policy>,
+    latest_dice_policy: &Arc<DicePolicy>,
     instance_ctx: &mut PersistentInstanceContext,
 ) -> Result<(), Error> {
     let path = storage.build_storage_file_path_for_instance(instance_id);
@@ -827,7 +840,7 @@ fn update_persistent_client_policy(
     storage: &mut dyn PersistentStorage,
     instance_seq_number: i64,
     client_id: &Arc<ClientId>,
-    latest_dice_policy: &Arc<Policy>,
+    latest_dice_policy: &Arc<DicePolicy>,
     client_info: &mut ClientInfoAtRollbackProtection,
 ) -> Result<(), Error> {
     match client_info {

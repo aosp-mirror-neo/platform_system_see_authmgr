@@ -19,18 +19,18 @@ use crate::{
     am_err,
     error::{Error, ErrorCode},
     traits::RawConnection,
-    try_to_vec,
 };
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use authgraph_core::key::{CertChain, EcVerifyKey, InstanceIdentifier, Policy};
+use authgraph_core::key::{CertChain, EcVerifyKey, InstanceIdentifier};
 use authmgr_common::{
     signed_connection_request::{Challenge, TransportID},
-    Token,
+    DicePolicy, Token,
 };
-use log::warn;
+use coset::CborSerializable;
+use log::{error, warn};
 
 /// Version of the data structure format used to store details of a persistent instance
 pub const VERSION_PERSISTENT_INSTANCE_CONTEXT: i64 = 1;
@@ -136,7 +136,7 @@ pub struct DiceArtifacts {
     /// DICE certificate chain
     pub cert_chain: Arc<CertChain>,
     /// DICE poicy
-    pub policy: Arc<Policy>,
+    pub policy: Arc<DicePolicy>,
 }
 
 /// Enum representing the three different outcomes of matching a given DICE policy against the
@@ -162,12 +162,12 @@ pub struct AuthorizedClient {
     /// Unique sequence number assigned to the client by the AuthMgr BE
     pub sequence_number: i64,
     /// DICE policy of the client
-    pub policy: Arc<Policy>,
+    pub policy: Arc<DicePolicy>,
 }
 
 impl AuthorizedClient {
     /// Update the client's policy with the given policy
-    pub fn update_policy(&mut self, updated_policy: &Arc<Policy>) {
+    pub fn update_policy(&mut self, updated_policy: &Arc<DicePolicy>) {
         self.policy = Arc::clone(updated_policy);
     }
 }
@@ -185,7 +185,7 @@ pub struct PersistentContext {
     /// Unique sequence number assigned by the AuthMgrBE
     pub sequence_number: i64,
     /// DICE policy
-    pub dice_policy: Arc<Policy>,
+    pub dice_policy: Arc<DicePolicy>,
 }
 
 impl PersistentContext {
@@ -196,18 +196,17 @@ impl PersistentContext {
     /// Define the error message returned during deserialization for insufficient data
     pub const ERROR_MSG_INSUFFICIENT_DATA: &str = "insufficient data for PersistentContext";
 
-    /// Calculate the size of the instance/client context, including the variable size DICE policy.
-    pub fn size(&self) -> usize {
-        Self::MIN_SIZE + self.dice_policy.0.len()
-    }
-
     /// Serialize `PersistentContext` into a byte vector
     pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
         let mut v = Vec::new();
-        v.try_reserve(self.size())?;
+        let encoded_policy = (*self.dice_policy).clone().to_vec().map_err(|e| {
+            error!("failed to encode DicePolicy: {:?}", e);
+            am_err!(InternalError, "failed to encode DicePolicy")
+        })?;
+        v.try_reserve(Self::MIN_SIZE + encoded_policy.len())?;
         v.extend_from_slice(&self.version.to_ne_bytes());
         v.extend_from_slice(&self.sequence_number.to_ne_bytes());
-        v.extend_from_slice(self.dice_policy.0.as_slice());
+        v.extend_from_slice(&encoded_policy);
         Ok(v)
     }
 
@@ -221,7 +220,10 @@ impl PersistentContext {
         let sequence_number =
             i64::from_ne_bytes(data[Self::SEQUENCE_NUM_OFFSET..Self::MIN_SIZE].try_into()?);
         let dice_policy_bytes = &data[Self::MIN_SIZE..];
-        let dice_policy = Arc::new(Policy(try_to_vec(dice_policy_bytes)?));
+        let dice_policy = Arc::new(DicePolicy::from_slice(dice_policy_bytes).map_err(|e| {
+            error!("failed to decode DicePolicy: {:?}", e);
+            am_err!(InternalError, "failed to decode DicePolicy")
+        })?);
         Ok(PersistentInstanceContext { version, sequence_number, dice_policy })
     }
 }
@@ -645,15 +647,15 @@ pub enum ClientInfoAtRollbackProtection<'a> {
 }
 impl<'a> ClientInfoAtRollbackProtection<'a> {
     /// Match with a given policy
-    pub fn match_policy(&'a self, given_policy: &Policy) -> bool {
+    pub fn match_policy(&'a self, given_policy: &DicePolicy) -> bool {
         match self {
             Self::FromCache(authorized_client) => *authorized_client.policy == *given_policy,
             Self::FromPersistentStorage(ctx) => *ctx.dice_policy == *given_policy,
         }
     }
 
-    /// Retrieve the DICE policy as a `Policy` object
-    pub fn get_policy(&'a self) -> Result<&'a Policy, Error> {
+    /// Retrieve the DICE policy as a `DicePolicy` object
+    pub fn get_policy(&'a self) -> Result<&'a DicePolicy, Error> {
         match self {
             Self::FromCache(authorized_client) => Ok(&authorized_client.policy),
             Self::FromPersistentStorage(ctx) => Ok(&ctx.dice_policy),
@@ -666,13 +668,22 @@ mod tests {
     use super::*;
     use alloc::sync::Arc;
     use alloc::vec;
-    use authgraph_core::key::Policy;
+    use authgraph_core_test::{
+        create_dice_cert_chain_for_guest_os, SAMPLE_INSTANCE_HASH, TEST_OS_COMPONENT_NAME,
+    };
+    use authmgr_common_util::get_constraints_spec_for_trusty_vm;
 
     #[test]
     fn test_persistent_context_serialization_roundtrip() {
-        // A mock policy is used here to keep these unit tests simple.
-        // We use actual policies in the protocol level tests in authmgr-be-impl/src/tests.rs.
-        let dice_policy = Arc::new(Policy(vec![1, 2, 3, 4]));
+        // Create DICE chain for a pvm instance
+        let (_sign_key, _cdi_values, cert_chain_bytes) =
+            create_dice_cert_chain_for_guest_os(Some(SAMPLE_INSTANCE_HASH), 1);
+        // Create constraints spec
+        let constraint_spec = get_constraints_spec_for_trusty_vm(TEST_OS_COMPONENT_NAME);
+        // Create policy given constraints spec and DICE chain
+        let policy = dice_policy_builder::policy_for_dice_chain(&cert_chain_bytes, constraint_spec)
+            .expect("failed to building policy 1");
+        let dice_policy = Arc::new(policy);
         let context = PersistentContext {
             version: 1,
             sequence_number: 12345,
