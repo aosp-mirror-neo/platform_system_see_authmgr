@@ -29,7 +29,7 @@ use authmgr_be::error::Error;
 use authmgr_be::traits::{RawConnection, RpcConnection};
 use authmgr_common::{
     signed_connection_request::{
-        Challenge, ConnectionRequest, TransportID, TEMP_AUTHMGR_BE_TRANSPORT_ID,
+        Challenge, ConnectionRequest, TransportID, AUTHMGR_BE_TRANSPORT_ID,
     },
     Result as AuthMgrCommonResult, Token, TOKEN_LENGTH,
 };
@@ -84,7 +84,7 @@ impl PVM {
         let conn_req = ConnectionRequest::new_for_ffa_transport(
             challenge,
             self.rpc_connection.transport_id,
-            TEMP_AUTHMGR_BE_TRANSPORT_ID,
+            AUTHMGR_BE_TRANSPORT_ID,
         );
         conn_req.sign(&self.sign_key, &*self.ecdsa, self.sign_key.get_cose_sign_algorithm())
     }
