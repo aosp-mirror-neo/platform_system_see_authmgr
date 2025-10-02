@@ -531,6 +531,10 @@ pub struct AuthorizedClientFullDiceArtifacts {
     pub client_id: Arc<ClientId>,
     /// Complete DICE artifacts of the client
     pub full_dice_artifacts: DiceArtifacts,
+    /// Identifier of the pVM instance that the client is running in
+    pub instance_id: Arc<InstanceIdentifier>,
+    /// Persistent status
+    pub is_persistent: bool,
 }
 
 /// List of authorized clients with their full DICE artifacts. This is particularly required for the
@@ -661,6 +665,16 @@ impl<'a> ClientInfoAtRollbackProtection<'a> {
             Self::FromPersistentStorage(ctx) => Ok(&ctx.dice_policy),
         }
     }
+}
+
+/// Encapsulates the client metadata required by trusted HAL services
+pub struct ClientMetaData {
+    /// Identifier of the pVM instance
+    pub instance_id: InstanceIdentifier,
+    /// Identifier assigned to the client by the pVM
+    pub client_id: ClientId,
+    /// Is the instance/client persistent
+    pub is_persistent: bool,
 }
 
 #[cfg(test)]

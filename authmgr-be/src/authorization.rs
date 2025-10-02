@@ -20,10 +20,10 @@ use crate::{
     data_structures::{
         AuthStartedPvm, AuthStartedPvms, AuthenticatedConnectionInfo, AuthenticatedPvms,
         AuthorizedClient, AuthorizedClientFullDiceArtifacts, AuthorizedClientsGlobalList, ClientId,
-        ClientInfoAtRollbackProtection, ConnectionAuthState, DiceArtifacts, MemoryLimits,
-        PendingClientAuthorization, PendingClientAuthorizations, PersistentClientContext,
-        PersistentInstanceContext, PolicyMatchingResult, VERSION_PERSISTENT_CLIENT_CONTEXT,
-        VERSION_PERSISTENT_INSTANCE_CONTEXT,
+        ClientInfoAtRollbackProtection, ClientMetaData, ConnectionAuthState, DiceArtifacts,
+        MemoryLimits, PendingClientAuthorization, PendingClientAuthorizations,
+        PersistentClientContext, PersistentInstanceContext, PolicyMatchingResult,
+        VERSION_PERSISTENT_CLIENT_CONTEXT, VERSION_PERSISTENT_INSTANCE_CONTEXT,
     },
     error::{Error, ErrorCode, PolicyMatchingError},
     traits::{Device, PersistentStorage, RawConnection, RpcConnection, WriteMode},
@@ -492,6 +492,21 @@ impl AuthMgrBE {
         }
     }
 
+    /// Retrieve metadata of a client identified by the client sequence number
+    pub fn get_client_metadata(
+        &self,
+        client_seq_number: i64,
+    ) -> Result<ClientMetaData, PolicyMatchingError> {
+        match self.authorized_clients.get(client_seq_number) {
+            Some(client) => Ok(ClientMetaData {
+                instance_id: try_to_vec(&client.instance_id)?,
+                client_id: ClientId(try_to_vec(&client.client_id.0)?),
+                is_persistent: client.is_persistent,
+            }),
+            None => Err(PolicyMatchingError::ClientSeqNumNotFound),
+        }
+    }
+
     // A helper method for creating/updating the instance context in the secure storage and
     // enforcing rollback protection for a persistent pvm.
     fn handle_instance_in_persistent_storage(
@@ -717,6 +732,8 @@ impl AuthMgrBE {
                     transport_id: state.transport_id,
                     client_id: Arc::clone(client_id),
                     full_dice_artifacts: client_full_dice_artifacts,
+                    instance_id: Arc::clone(&state.instance_id),
+                    is_persistent: state.is_persistent,
                 })?;
             }
         }
