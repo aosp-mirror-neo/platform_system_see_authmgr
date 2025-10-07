@@ -123,10 +123,11 @@ pub trait RawConnection: Send {
 /// 3) Client contexts - information related to a client in an instance, such as client sequence
 ///    number, DICE policy for the client's DICE certificate, etc. The information contained in a
 ///    client context may vary depending on whether the client is persistent or not. The path to the
-///    storage of a client context is uniquely identified by the instance sequence number and the
-///    client id - so that the storage artifact containing the client context can be queried during
-///    phase 2 of the protocol, given the instance sequence number from phase 1 of the
-///    protocol and the client id provided by the AuthMgr FE in phase 2.
+///    storage of a client context is uniquely identified by the combination of the
+///    instance identifier, instance sequence number and the client id - so that the storage
+///    artifacts containing the client context can be queried during phase 2 of the protocol, given
+///    the instance id, instance sequence number from phase 1 of the protocol and the client id
+///    provided by the AuthMgr FE in phase 2.
 ///    TODO: b/443130600 - Optimization: Introduce the notion of a transaction and commit to the
 ///    Storage trait.
 pub trait Storage: Send {
@@ -147,39 +148,36 @@ pub trait Storage: Send {
     /// Following is how the file paths for the three types of files are constructed in the
     /// helper methods that follow:
     /// 1. The file that stores the global sequence number:
-    ///    authmgr_be_storage_prefix + storage_path_separator + seq_num_file_name
+    ///    "GLOBAL_SEQ_NUM"
     /// 2. The file(s) that store the instance contexts:
-    ///    authmgr_be_storage_prefix + storage_path_separator + hex_encoded_instance_id
+    ///    instance_context_file_prefix + storage_path_separator + hex_encoded_instance_id
     /// 3. The file(s) that store the client contexts:
-    ///    authmgr_be_storage_prefix + storage_path_separator + instance_seq_num +
-    ///    storage_path_separator + hex_encoded_client_id
+    ///    client_context_file_prefix + storage_path_separator + hex_encoded_instance_id +
+    ///    instance_seq_num + storage_path_separator + hex_encoded_client_id
     ///
     /// Helper method with a default implementation to build the file path for an instance context.
     fn build_storage_file_path_for_instance(&self, instance_id: &InstanceIdentifier) -> String {
-        let mut path = String::from(self.get_authmgr_be_storage_path_prefix());
+        let mut path = String::from(self.get_instance_context_storage_prefix());
         path.push_str(self.get_authmgr_be_storage_path_separator());
-        // Instance id is a unique identifier for a pVM, so we assume that two instance ids cannot
-        // result in the same string even with `from_utf8_lossy`.
         path.push_str(&hex::encode(instance_id));
         path
     }
 
     /// Helper method with a default implementation to build the file path for a client context.
-    fn build_storage_file_path_for_client(&self, vm_seq_num: i64, client_id: &ClientId) -> String {
-        let mut path = String::from(self.get_authmgr_be_storage_path_prefix());
+    fn build_storage_file_path_for_client(
+        &self,
+        instance_id: &InstanceIdentifier,
+        vm_seq_num: i64,
+        client_id: &ClientId,
+    ) -> String {
+        let mut path = String::from(self.get_client_context_storage_prefix());
+        path.push_str(self.get_authmgr_be_storage_path_separator());
+        path.push_str(&hex::encode(instance_id));
         path.push_str(self.get_authmgr_be_storage_path_separator());
         path.push_str(vm_seq_num.to_string().as_str());
         path.push_str(self.get_authmgr_be_storage_path_separator());
-        // Client id is a unique identifier for a pVM, so we assume that two client ids cannot
-        // result in the same string even with `from_utf8_lossy`.
         path.push_str(&hex::encode(&client_id.0));
         path
-    }
-
-    /// Helper method to get the file path prefix for the storage location(s) for AuthMgr-BE.
-    fn get_authmgr_be_storage_path_prefix(&self) -> &'static str {
-        const AUTHMGR_BE_STORAGE_PREFIX: &str = "AUTHMGR_BE";
-        AUTHMGR_BE_STORAGE_PREFIX
     }
 
     /// Helper method to get the separator character used when constructing file paths.
@@ -190,8 +188,20 @@ pub trait Storage: Send {
 
     /// Helper method to get the file path for the storage location of the global sequence number.
     fn get_global_seq_num_storage_path(&self) -> &'static str {
-        const GLOBAL_SEQ_NUM_STORAGE_PATH: &str = "AUTHMGR_BE-GLOBAL_SEQ_NUM";
+        const GLOBAL_SEQ_NUM_STORAGE_PATH: &str = "GLOBAL_SEQ_NUM";
         GLOBAL_SEQ_NUM_STORAGE_PATH
+    }
+
+    /// Helper method to get the file path prefix for the storage of the instance contexts.
+    fn get_instance_context_storage_prefix(&self) -> &'static str {
+        const INSTANCE_CONTEXT_STORAGE_PREFIX: &str = "INSTANCE_CONTEXT";
+        INSTANCE_CONTEXT_STORAGE_PREFIX
+    }
+
+    /// Helper method to get the file path prefix for the storage of the client contexts.
+    fn get_client_context_storage_prefix(&self) -> &'static str {
+        const CLIENT_CONTEXT_STORAGE_PREFIX: &str = "CLIENT_CONTEXT";
+        CLIENT_CONTEXT_STORAGE_PREFIX
     }
 }
 

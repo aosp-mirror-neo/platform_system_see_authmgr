@@ -361,6 +361,7 @@ impl AuthMgrBE {
         let client_id = Arc::new(ClientId(try_to_vec(client_id)?));
         let given_dice_cert = DiceChainEntry::from_slice(client_dice_cert)?;
         let is_persistent = state.is_persistent;
+        let instance_id = Arc::clone(&state.instance_id);
         let instance_seq_number = state.instance_seq_number;
         // In what follows, we do the following:
         // 1. Read from the cache to see if this client is already authorized in the current boot
@@ -379,6 +380,7 @@ impl AuthMgrBE {
                 let client_seq_number = client.sequence_number;
                 let policy_need_update = !(given_policy == client.policy);
                 self.enforce_rollback_protection_for_client_in_cache(
+                    &instance_id,
                     instance_seq_number,
                     client,
                     &given_dice_cert,
@@ -390,6 +392,7 @@ impl AuthMgrBE {
                 // If not, read from the storage
                 let client_seq_number = if is_persistent {
                     self.handle_client_in_persistent_storage(
+                        &instance_id,
                         instance_seq_number,
                         &client_id,
                         &given_dice_cert,
@@ -590,12 +593,14 @@ impl AuthMgrBE {
     // A helper method to enforce rollback protection for a client already in the cache.
     fn enforce_rollback_protection_for_client_in_cache(
         &mut self,
+        instance_id: &Arc<InstanceIdentifier>,
         instance_seq_number: i64,
         authorized_client: &mut AuthorizedClient,
         given_dice_cert: &DiceChainEntry,
         given_policy: &Arc<DicePolicy>,
     ) -> Result<(), Error> {
         self.enforce_rollback_protection_for_client(
+            instance_id,
             instance_seq_number,
             &Arc::clone(&authorized_client.client_id),
             given_dice_cert,
@@ -606,6 +611,7 @@ impl AuthMgrBE {
 
     fn handle_client_in_persistent_storage(
         &mut self,
+        instance_id: &Arc<InstanceIdentifier>,
         instance_seq_number: i64,
         client_id: &Arc<ClientId>,
         given_dice_cert: &DiceChainEntry,
@@ -613,11 +619,13 @@ impl AuthMgrBE {
     ) -> Result<i64, Error> {
         match read_persistent_client_context(
             &*self.persistent_storage,
+            instance_id,
             instance_seq_number,
             client_id,
         )? {
             Some(mut client_ctx) => {
                 self.enforce_rollback_protection_for_client(
+                    instance_id,
                     instance_seq_number,
                     client_id,
                     given_dice_cert,
@@ -638,6 +646,7 @@ impl AuthMgrBE {
                     .fetch_and_increment(&mut *self.persistent_storage)?;
                 write_persistent_client_context(
                     &mut *self.persistent_storage,
+                    instance_id,
                     instance_seq_number,
                     client_id,
                     &PersistentClientContext {
@@ -653,6 +662,7 @@ impl AuthMgrBE {
 
     fn enforce_rollback_protection_for_client(
         &mut self,
+        instance_id: &Arc<InstanceIdentifier>,
         instance_seq_number: i64,
         client_id: &Arc<ClientId>,
         given_dice_cert: &DiceChainEntry,
@@ -677,6 +687,7 @@ impl AuthMgrBE {
             // Update the policy in the storage
             update_persistent_client_policy(
                 &mut *self.persistent_storage,
+                instance_id,
                 instance_seq_number,
                 client_id,
                 given_policy,
@@ -831,11 +842,13 @@ fn update_persistent_instance_policy(
 // A helper function to write a new client context to the persistent storage.
 fn write_persistent_client_context(
     storage: &mut dyn PersistentStorage,
+    instance_id: &Arc<InstanceIdentifier>,
     instance_seq_number: i64,
     client_id: &Arc<ClientId>,
     client_ctx: &PersistentClientContext,
 ) -> Result<(), Error> {
-    let path = storage.build_storage_file_path_for_client(instance_seq_number, client_id);
+    let path =
+        storage.build_storage_file_path_for_client(instance_id, instance_seq_number, client_id);
     let ctx_bytes = client_ctx.to_bytes()?;
     storage.write(&path, ctx_bytes.as_slice(), WriteMode::CreateExclusive)
 }
@@ -843,10 +856,12 @@ fn write_persistent_client_context(
 // A helper function to read the client context from the persistent storage.
 fn read_persistent_client_context(
     storage: &dyn PersistentStorage,
+    instance_id: &Arc<InstanceIdentifier>,
     instance_seq_number: i64,
     client_id: &Arc<ClientId>,
 ) -> Result<Option<PersistentClientContext>, Error> {
-    let path = storage.build_storage_file_path_for_client(instance_seq_number, client_id);
+    let path =
+        storage.build_storage_file_path_for_client(instance_id, instance_seq_number, client_id);
     storage
         .read(&path)?
         .map_or_else(|| Ok(None), |data| Ok(Some(PersistentClientContext::from_bytes(&data)?)))
@@ -855,6 +870,7 @@ fn read_persistent_client_context(
 // A helper function to update the client's DICE policy in the persistent storage.
 fn update_persistent_client_policy(
     storage: &mut dyn PersistentStorage,
+    instance_id: &Arc<InstanceIdentifier>,
     instance_seq_number: i64,
     client_id: &Arc<ClientId>,
     latest_dice_policy: &Arc<DicePolicy>,
@@ -862,17 +878,32 @@ fn update_persistent_client_policy(
 ) -> Result<(), Error> {
     match client_info {
         ClientInfoAtRollbackProtection::FromPersistentStorage(client_ctx) => {
-            let path = storage.build_storage_file_path_for_client(instance_seq_number, client_id);
+            let path = storage.build_storage_file_path_for_client(
+                instance_id,
+                instance_seq_number,
+                client_id,
+            );
             client_ctx.dice_policy = Arc::clone(latest_dice_policy);
             let ctx_bytes = client_ctx.to_bytes()?;
             storage.write(&path, ctx_bytes.as_slice(), WriteMode::OverwriteExisting)
         }
         ClientInfoAtRollbackProtection::FromCache(authorized_client) => {
-            let path = storage.build_storage_file_path_for_client(instance_seq_number, client_id);
-            let mut client_ctx =
-                read_persistent_client_context(storage, instance_seq_number, client_id)?.ok_or(
-                    am_err!(InternalError, "storage not found for client context at: {:?}", path),
-                )?;
+            let path = storage.build_storage_file_path_for_client(
+                instance_id,
+                instance_seq_number,
+                client_id,
+            );
+            let mut client_ctx = read_persistent_client_context(
+                storage,
+                instance_id,
+                instance_seq_number,
+                client_id,
+            )?
+            .ok_or(am_err!(
+                InternalError,
+                "storage not found for client context at: {:?}",
+                path
+            ))?;
             client_ctx.dice_policy = Arc::clone(latest_dice_policy);
             let ctx_bytes = client_ctx.to_bytes()?;
             storage.write(&path, ctx_bytes.as_slice(), WriteMode::OverwriteExisting)?;
