@@ -29,7 +29,6 @@ rust_defaults {
         "libciborium",
         "liblog_rust",
     ],
-    no_stdlibs: true,
 }
 
 rust_library {
