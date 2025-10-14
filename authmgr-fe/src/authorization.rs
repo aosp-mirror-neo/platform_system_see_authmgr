@@ -19,7 +19,6 @@
 
 use crate::error::Error;
 use crate::traits::{ConnectionToAuthorize, Device};
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 use log::warn;
 
@@ -35,17 +34,17 @@ use authmgr_common::{CryptoTraitImpl, Token, CMD_RAW, TOKEN_LENGTH};
 use coset::CborSerializable;
 
 /// The core logic for AuthMgr FE
-pub struct AuthMgrFe {
-    device: Box<dyn Device>,
+pub struct AuthMgrFe<D: Device> {
+    device: D,
     crypto: CryptoTraitImpl,
     authmgr: binder::Strong<dyn IAuthMgrAuthorization>,
     is_pvm_authenticated: bool,
 }
 
-impl AuthMgrFe {
+impl<D: Device> AuthMgrFe<D> {
     /// Create a new AuthMgrFE
     pub fn new(
-        device: Box<dyn Device>,
+        device: D,
         crypto: CryptoTraitImpl,
         authmgr: binder::Strong<dyn IAuthMgrAuthorization>,
     ) -> Self {
@@ -124,14 +123,13 @@ impl AuthMgrFe {
     /// versions, and other OS-specific policies.
     pub fn authorize_connection(
         &self,
-        connection: &dyn ConnectionToAuthorize,
         client_id: &[u8],
         service_name: &str,
         // TODO at the end of the day these values are just serialized directly.
         // It does not make sense for callers to serde only for us to ser again.
         dice_leaf: AuthGraphDiceChainEntry,
         leaf_policy: Vec<u8>,
-    ) -> Result<(), Error> {
+    ) -> Result<D::Connection, Error> {
         // There's no need to try to execute phase 2 if we know we haven't completed phase 1.
         // Note that we don't have an assurance here that the pVM is authenticated, just that it
         // was at some point. The call below to `authorizeAndConnectClientToTrustedService` may
@@ -140,7 +138,7 @@ impl AuthMgrFe {
         if !self.is_pvm_authenticated {
             return Err(Error::AuthMgrFeNotAuthenticated);
         }
-
+        let connection = self.device.new_connection_to_authorize()?;
         // The initial message on the out of band connection consists of
         // a single byte control character (CMD_RAW) and a Token.
         let msg_size = 1 + TOKEN_LENGTH;
@@ -173,7 +171,7 @@ impl AuthMgrFe {
         // raw connection was processed. In that case only, we retry. Retrying with the same token
         // should be fine because the BE hasn't seen it yet.
         match auth_res {
-            Ok(_) => Ok(()),
+            Ok(_) => {}
             Err(b)
                 if b.service_specific_error()
                     == IAuthMgrAuthorizationError::NO_CONNECTION_TO_AUTHORIZE.get() =>
@@ -182,15 +180,18 @@ impl AuthMgrFe {
                     "Retrying authorization for client {client_id:?} and service {service_name} \
                 because authmgr-be has not processed the raw connection yet"
                 );
-                Ok(self.authmgr.authorizeAndConnectClientToTrustedService(
+                self.authmgr.authorizeAndConnectClientToTrustedService(
                     client_id,
                     service_name,
                     token,
                     &dice_leaf_artifacts,
-                )?)
+                )?;
             }
-            Err(e) => Err(e)?,
+            Err(e) => {
+                return Err(e)?;
+            }
         }
+        Ok(connection)
     }
 
     fn get_signed_connection_request(

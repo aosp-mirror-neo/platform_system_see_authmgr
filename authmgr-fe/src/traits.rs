@@ -21,6 +21,9 @@ use authmgr_common::signed_connection_request::TransportIdInfo;
 
 /// Device specific behavior that a concrete implementation needs to provide
 pub trait Device: Send {
+    /// Connection to be authorized and handed over to the client and the trusted service that the
+    /// client needs to connect to.
+    type Connection: ConnectionToAuthorize;
     /// This function can be implemented to provide a unique instance id for
     /// a given AuthMgr FE.
     ///
@@ -33,13 +36,16 @@ pub trait Device: Send {
     /// The transport info for the AuthMgr Frontend (this pVM) and the
     /// AuthMgr Backend (i.e. where IAuthMgrAuthorization is running)
     fn get_transport_id_info(&self) -> Result<TransportIdInfo, Error>;
+
+    ///  Create a new connection to authorize and share with a client TA
+    fn new_connection_to_authorize(&self) -> Result<Self::Connection, Error>;
 }
 
 /// Implementers of this trait are connections to the AuthMgr-BE requesting
 /// to be handed over to a trusted service.
 ///
 /// See `AuthMgrFe::authorize_connection` for more detail.
-pub trait ConnectionToAuthorize {
+pub trait ConnectionToAuthorize: Send {
     /// Send data on this connection. Implementers must send the entire buffer.
     fn send(&self, buff: &[u8]) -> Result<(), Error>;
 }
