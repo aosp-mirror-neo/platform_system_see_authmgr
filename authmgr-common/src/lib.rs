@@ -21,10 +21,11 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::string::String;
-use authgraph_core::key::{CertChain, DiceChainEntry, Policy};
+use authgraph_core::key::{CertChain, DiceChainEntry};
 use authgraph_core::traits::{EcDsa, Rng};
 use coset::{CborSerializable, CoseError};
-use dice_policy::{DicePolicy, DICE_POLICY_VERSION};
+pub use dice_policy::{DicePolicy, DICE_POLICY_VERSION};
+use log::error;
 use thiserror::Error;
 
 pub mod signed_connection_request;
@@ -107,18 +108,25 @@ macro_rules! amc_err {
 
 /// Wrapper function around the dice_policy library API, to match a DICE chain with a DICE policy,
 /// to be used in AuthMgr protocol.
-pub fn match_dice_chain_with_policy(cert_chain: &CertChain, policy: &Policy) -> Result<bool> {
+pub fn match_dice_chain_with_policy(cert_chain: &CertChain, policy: &DicePolicy) -> Result<bool> {
     let cert_chain = cert_chain.clone().to_vec()?;
-    let result = dice_policy::chain_matches_policy(&cert_chain, &policy.0);
-    Ok(result.is_ok())
+    Ok(policy
+        .matches_dice_chain(&cert_chain)
+        .map_err(|e| {
+            error!("failed to match DICE chain with DICE policy: {:?}", e);
+            e
+        })
+        .is_ok())
 }
 
 /// Wrapper function around the dice_policy library API, to match a DICE certificate with a DICE
 /// policy, to be used in AuthMgr protocol. A DICE policy created for a single DICE certificate is
 /// expected to have up to only one nodeConstraintList, as per the DICE policy specification.
-pub fn match_dice_cert_with_policy(dice_cert: &DiceChainEntry, policy: &Policy) -> Result<bool> {
-    let dice_policy = DicePolicy::from_slice(&policy.0)?;
-    if dice_policy.node_constraints_list.is_empty() {
+pub fn match_dice_cert_with_policy(
+    dice_cert: &DiceChainEntry,
+    policy: &DicePolicy,
+) -> Result<bool> {
+    if policy.node_constraints_list.is_empty() {
         return Ok(true);
     }
     let dice_node = dice_cert
@@ -127,9 +135,10 @@ pub fn match_dice_cert_with_policy(dice_cert: &DiceChainEntry, policy: &Policy) 
         .as_ref()
         .ok_or(amc_err!(UnknownError, "no certificate payload found"))?;
     let result =
-        dice_policy::check_constraints_on_node(&dice_policy.node_constraints_list[0], dice_node)
-            .map_err(|_e| {
-                amc_err!(DicePolicyMatchingFailed, "failed to match constraints on DICE cert")
+        dice_policy::check_constraints_on_node(&policy.node_constraints_list[0], dice_node)
+            .map_err(|e| {
+                error!("failed to match constraints on DICE cert: {:?}", e);
+                e
             });
     Ok(result.is_ok())
 }
@@ -137,9 +146,10 @@ pub fn match_dice_cert_with_policy(dice_cert: &DiceChainEntry, policy: &Policy) 
 /// Get a copy of this DICE policy extended with the given DICE policy. This is an AuthMgr
 /// specific requirement where we create a DICE policy for a child DICE certificate and later
 /// need to combine it with the policy for the parent DICE cert chain
-pub fn extend_dice_policy_with(parent_policy: &Policy, child_policy: &Policy) -> Result<Policy> {
-    let parent_policy = DicePolicy::from_slice(&parent_policy.0)?;
-    let child_policy = DicePolicy::from_slice(&child_policy.0)?;
+pub fn extend_dice_policy_with(
+    parent_policy: &DicePolicy,
+    child_policy: &DicePolicy,
+) -> Result<DicePolicy> {
     // Match the version of the two policies
     if parent_policy.version != child_policy.version {
         return Err(amc_err!(DicePolicyCreationFailed, "policy versions do not match"));
@@ -150,7 +160,7 @@ pub fn extend_dice_policy_with(parent_policy: &Policy, child_policy: &Policy) ->
         version: DICE_POLICY_VERSION,
         node_constraints_list: parent_node_constraints.into_boxed_slice(),
     };
-    Ok(Policy(extended_policy.to_vec()?))
+    Ok(extended_policy)
 }
 
 #[cfg(test)]
@@ -180,15 +190,11 @@ mod tests {
         // Create constraints spec 1
         let constraint_spec_1 = get_constraints_spec_for_trusty_vm(TEST_OS_COMPONENT_NAME);
         // Create policy 1 given constraints spec 1 and DICE chain 1
-        let policy_1 = Policy(
-            dice_policy_builder::policy_for_dice_chain(
-                &cert_chain_bytes_1,
-                constraint_spec_1.clone(),
-            )
-            .expect("failed to building policy 1")
-            .to_vec()
-            .expect("failed to encode policy 1"),
-        );
+        let policy_1 = dice_policy_builder::policy_for_dice_chain(
+            &cert_chain_bytes_1,
+            constraint_spec_1.clone(),
+        )
+        .expect("failed to building policy 1");
         // Match DICE chain 1 to policy 1 and expect a match
         let result1 = match_dice_chain_with_policy(&cert_chain_1, &policy_1);
         assert!(result1.unwrap());
@@ -199,12 +205,8 @@ mod tests {
         // Create a constraints spec for client 1
         let client_constraint_spec_km = get_constraint_spec_for_static_trusty_ta();
         // Create the client policy given the constraints spec and DICE cert entry
-        let client_policy_1 = Policy(
-            policy_for_dice_node(&leaf_cert_1, client_constraint_spec_km)
-                .expect("failed to create dice policy for keymint")
-                .to_vec()
-                .expect("failed to encode policy for client TA 1"),
-        );
+        let client_policy_1 = policy_for_dice_node(&leaf_cert_1, client_constraint_spec_km)
+            .expect("failed to create dice policy for keymint");
         // Match the client's DICE cert entry and policy and expect a match
         let result_1a = match_dice_cert_with_policy(&leaf_cert_1, &client_policy_1);
         assert!(result_1a.unwrap());
@@ -256,15 +258,11 @@ mod tests {
         // Create constraints spec 1
         let constraint_spec_1 = get_constraints_spec_for_trusty_vm(TEST_OS_COMPONENT_NAME);
         // Create policy 1 given constraints spec 1 and DICE chain 1
-        let policy_1 = Policy(
-            dice_policy_builder::policy_for_dice_chain(
-                &cert_chain_bytes_1,
-                constraint_spec_1.clone(),
-            )
-            .expect("failed to building policy 1")
-            .to_vec()
-            .expect("failed to encode policy 1"),
-        );
+        let policy_1 = dice_policy_builder::policy_for_dice_chain(
+            &cert_chain_bytes_1,
+            constraint_spec_1.clone(),
+        )
+        .expect("failed to building policy 1");
         // Match DICE chain 1 to policy 1 and expect a match
         let result1 = match_dice_chain_with_policy(&cert_chain_1, &policy_1);
         assert_eq!(result1, Ok(true));
@@ -285,12 +283,9 @@ mod tests {
         // Create (different) constraints spec 2
         let constraint_spec_2 = get_relaxed_constraints_spec_for_trusty_vm();
         // Create policy 2 given constraints spec 2 and DICE chain 2
-        let policy_2 = Policy(
+        let policy_2 =
             dice_policy_builder::policy_for_dice_chain(&cert_chain_bytes_2, constraint_spec_2)
-                .expect("failed to building policy 2")
-                .to_vec()
-                .expect("failed to encode policy 2"),
-        );
+                .expect("failed to building policy 2");
         // Match DICE chain 2 with policy 2 and expect a match
         let result2 = match_dice_chain_with_policy(&cert_chain_2, &policy_2);
         assert_eq!(result2, Ok(true));
@@ -311,12 +306,8 @@ mod tests {
         // Create a constraints spec for client 1
         let client_constraint_spec_km = get_constraint_spec_for_static_trusty_ta();
         // Create the client policy given the constraints spec and DICE cert entry
-        let client_policy_1 = Policy(
-            policy_for_dice_node(&leaf_cert_1, client_constraint_spec_km)
-                .expect("failed to create dice policy for keymint")
-                .to_vec()
-                .expect("failed to encode policy for client TA 1"),
-        );
+        let client_policy_1 = policy_for_dice_node(&leaf_cert_1, client_constraint_spec_km)
+            .expect("failed to create dice policy for keymint");
         // Match the client's DICE cert entry and policy and expect a match
         let result_1a = match_dice_cert_with_policy(&leaf_cert_1, &client_policy_1);
         assert_eq!(result_1a, Ok(true));
@@ -328,12 +319,8 @@ mod tests {
         // Create constraints spec for client 2
         let client_constraint_spec_wv = get_constraint_spec_for_static_trusty_ta();
         // Create client policy giiven the constraints spec and DICE cert entry
-        let client_policy_2 = Policy(
-            policy_for_dice_node(&leaf_cert_2, client_constraint_spec_wv)
-                .expect("failed to create dice policy for widevine")
-                .to_vec()
-                .expect("failed to encode policy for client TA 2"),
-        );
+        let client_policy_2 = policy_for_dice_node(&leaf_cert_2, client_constraint_spec_wv)
+            .expect("failed to create dice policy for widevine");
         // Match the client's DICE cert entry and policy and expect a match
         let result_2a = match_dice_cert_with_policy(&leaf_cert_2, &client_policy_2);
         assert_eq!(result_2a, Ok(true));
@@ -387,12 +374,9 @@ mod tests {
         let cert_chain_3 =
             CertChain::from_slice(&cert_chain_bytes_3).expect("failed to decode cert_chain 3");
         // Create policy 3 given constraint spec 1 and DICE chain 3
-        let policy_3 = Policy(
+        let policy_3 =
             dice_policy_builder::policy_for_dice_chain(&cert_chain_bytes_3, constraint_spec_1)
-                .expect("failed to building policy 3")
-                .to_vec()
-                .expect("failed to encode policy 3"),
-        );
+                .expect("failed to building policy 3");
         // Match DICE chain 3 to policy 3 and expect a match
         let result3 = match_dice_chain_with_policy(&cert_chain_3, &policy_3);
         assert_eq!(result3, Ok(true));

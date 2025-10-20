@@ -24,17 +24,18 @@ use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use authgraph_core::key::{CertChain, EcVerifyKey, InstanceIdentifier, Policy};
+use authgraph_core::key::{CertChain, EcVerifyKey, InstanceIdentifier};
 use authmgr_common::{
     signed_connection_request::{Challenge, TransportID},
-    Token,
+    DicePolicy, Token,
 };
-use log::warn;
+use coset::CborSerializable;
+use log::{error, warn};
 
 /// Version of the data structure format used to store details of a persistent instance
-pub const VERSION_PERSISTENT_INSTANCE_CONTEXT: i32 = 1;
+pub const VERSION_PERSISTENT_INSTANCE_CONTEXT: i64 = 1;
 /// Version of the data structure format used to store details of a persistent client
-pub const VERSION_PERSISTENT_CLIENT_CONTEXT: i32 = 1;
+pub const VERSION_PERSISTENT_CLIENT_CONTEXT: i64 = 1;
 
 /// Default value for maximum number of entries in the cache for authentication started pVMs
 pub const MAX_SIZE_AUTH_STARTED_PVMS: usize = 6;
@@ -135,7 +136,7 @@ pub struct DiceArtifacts {
     /// DICE certificate chain
     pub cert_chain: Arc<CertChain>,
     /// DICE poicy
-    pub policy: Arc<Policy>,
+    pub policy: Arc<DicePolicy>,
 }
 
 /// Enum representing the three different outcomes of matching a given DICE policy against the
@@ -161,37 +162,70 @@ pub struct AuthorizedClient {
     /// Unique sequence number assigned to the client by the AuthMgr BE
     pub sequence_number: i64,
     /// DICE policy of the client
-    pub policy: Arc<Policy>,
+    pub policy: Arc<DicePolicy>,
 }
 
 impl AuthorizedClient {
     /// Update the client's policy with the given policy
-    pub fn update_policy(&mut self, updated_policy: &Arc<Policy>) {
+    pub fn update_policy(&mut self, updated_policy: &Arc<DicePolicy>) {
         self.policy = Arc::clone(updated_policy);
     }
 }
 
-/// Information of a persistent pvm instance stored in the persistent secure storage.
-/// Deletion of the persistent instances (and clients) at runtime is not currently supported.
-#[derive(Clone)]
-pub struct PersistentInstanceContext {
+/// Type alias to identify a persistent context created for an instance.
+pub type PersistentInstanceContext = PersistentContext;
+/// Type alias to identify a persistent context created for a client.
+pub type PersistentClientContext = PersistentContext;
+
+/// Information of a persistent pvm instance or client stored in the persistent secure storage.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PersistentContext {
     /// Version of the data structure format
-    pub version: i32,
-    /// Unique sequence number of the persistent instance
+    pub version: i64,
+    /// Unique sequence number assigned by the AuthMgrBE
     pub sequence_number: i64,
     /// DICE policy
-    pub dice_policy: Arc<Policy>,
+    pub dice_policy: Arc<DicePolicy>,
 }
 
-/// Information of a persistent client stored in the persistent secure storage.
-#[derive(Clone)]
-pub struct PersistentClientContext {
-    /// Version of the data structure format
-    pub version: i32,
-    /// Unique sequence number of the persistent client
-    pub sequence_number: i64,
-    /// DICE policy
-    pub dice_policy: Arc<Policy>,
+impl PersistentContext {
+    const SEQUENCE_NUM_OFFSET: usize = 8;
+    const SEQUENCE_NUM_SIZE: usize = 8;
+    const MIN_SIZE: usize = Self::SEQUENCE_NUM_OFFSET + Self::SEQUENCE_NUM_SIZE;
+    const _MIN_SIZE_ASSERT: () = assert!(Self::MIN_SIZE == 16);
+    /// Define the error message returned during deserialization for insufficient data
+    pub const ERROR_MSG_INSUFFICIENT_DATA: &str = "insufficient data for PersistentContext";
+
+    /// Serialize `PersistentContext` into a byte vector
+    pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+        let mut v = Vec::new();
+        let encoded_policy = (*self.dice_policy).clone().to_vec().map_err(|e| {
+            error!("failed to encode DicePolicy: {:?}", e);
+            am_err!(InternalError, "failed to encode DicePolicy")
+        })?;
+        v.try_reserve(Self::MIN_SIZE + encoded_policy.len())?;
+        v.extend_from_slice(&self.version.to_ne_bytes());
+        v.extend_from_slice(&self.sequence_number.to_ne_bytes());
+        v.extend_from_slice(&encoded_policy);
+        Ok(v)
+    }
+
+    /// Deserialize `PersistentContext` from a bytes
+    pub fn from_bytes(data: &[u8]) -> Result<Self, Error> {
+        // Minimum size in bytes (version and sequence number)
+        if data.len() <= Self::MIN_SIZE {
+            return Err(am_err!(InternalError, "{}", Self::ERROR_MSG_INSUFFICIENT_DATA));
+        }
+        let version = i64::from_ne_bytes(data[0..Self::SEQUENCE_NUM_OFFSET].try_into()?);
+        let sequence_number =
+            i64::from_ne_bytes(data[Self::SEQUENCE_NUM_OFFSET..Self::MIN_SIZE].try_into()?);
+        let dice_policy_bytes = &data[Self::MIN_SIZE..];
+        let dice_policy = Arc::new(DicePolicy::from_slice(dice_policy_bytes).map_err(|e| {
+            error!("failed to decode DicePolicy: {:?}", e);
+            am_err!(InternalError, "failed to decode DicePolicy")
+        })?);
+        Ok(PersistentInstanceContext { version, sequence_number, dice_policy })
+    }
 }
 
 /// Encapsulates information about a pVM instance which has completed step 1 of phase 1 of the
@@ -497,6 +531,10 @@ pub struct AuthorizedClientFullDiceArtifacts {
     pub client_id: Arc<ClientId>,
     /// Complete DICE artifacts of the client
     pub full_dice_artifacts: DiceArtifacts,
+    /// Identifier of the pVM instance that the client is running in
+    pub instance_id: Arc<InstanceIdentifier>,
+    /// Persistent status
+    pub is_persistent: bool,
 }
 
 /// List of authorized clients with their full DICE artifacts. This is particularly required for the
@@ -599,4 +637,94 @@ pub enum ConnectionAuthState {
     AuthenticationStarted,
     /// Phase 1 has been completed successfully
     AuthenticationCompleted(Box<AuthenticatedConnectionInfo>),
+}
+
+/// At the time of enforcng rollback protection on a client, the client's information can be
+/// read from the cache or from the storage. This enum wraps the two types of information
+/// that we have about the client in the two cases.
+pub enum ClientInfoAtRollbackProtection<'a> {
+    /// If the client information is read from the cache, what we have is the client's policy
+    FromCache(&'a mut AuthorizedClient),
+    /// If the client information is read from the storage, we have the struct holding the
+    /// client context
+    FromPersistentStorage(&'a mut PersistentClientContext),
+}
+impl<'a> ClientInfoAtRollbackProtection<'a> {
+    /// Match with a given policy
+    pub fn match_policy(&'a self, given_policy: &DicePolicy) -> bool {
+        match self {
+            Self::FromCache(authorized_client) => *authorized_client.policy == *given_policy,
+            Self::FromPersistentStorage(ctx) => *ctx.dice_policy == *given_policy,
+        }
+    }
+
+    /// Retrieve the DICE policy as a `DicePolicy` object
+    pub fn get_policy(&'a self) -> Result<&'a DicePolicy, Error> {
+        match self {
+            Self::FromCache(authorized_client) => Ok(&authorized_client.policy),
+            Self::FromPersistentStorage(ctx) => Ok(&ctx.dice_policy),
+        }
+    }
+}
+
+/// Encapsulates the client metadata required by trusted HAL services
+pub struct ClientMetaData {
+    /// Identifier of the pVM instance
+    pub instance_id: InstanceIdentifier,
+    /// Identifier assigned to the client by the pVM
+    pub client_id: ClientId,
+    /// Is the instance/client persistent
+    pub is_persistent: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::sync::Arc;
+    use alloc::vec;
+    use authgraph_core_test::{
+        create_dice_cert_chain_for_guest_os, SAMPLE_INSTANCE_HASH, TEST_OS_COMPONENT_NAME,
+    };
+    use authmgr_common_util::get_constraints_spec_for_trusty_vm;
+
+    #[test]
+    fn test_persistent_context_serialization_roundtrip() {
+        // Create DICE chain for a pvm instance
+        let (_sign_key, _cdi_values, cert_chain_bytes) =
+            create_dice_cert_chain_for_guest_os(Some(SAMPLE_INSTANCE_HASH), 1);
+        // Create constraints spec
+        let constraint_spec = get_constraints_spec_for_trusty_vm(TEST_OS_COMPONENT_NAME);
+        // Create policy given constraints spec and DICE chain
+        let policy = dice_policy_builder::policy_for_dice_chain(&cert_chain_bytes, constraint_spec)
+            .expect("failed to building policy 1");
+        let dice_policy = Arc::new(policy);
+        let context = PersistentContext {
+            version: 1,
+            sequence_number: 12345,
+            dice_policy: Arc::clone(&dice_policy),
+        };
+
+        let bytes = context.to_bytes().unwrap();
+        let new_context = PersistentContext::from_bytes(&bytes).unwrap();
+
+        assert_eq!(context, new_context);
+    }
+
+    #[test]
+    fn test_persistent_context_from_bytes_less_than_min_size_error() {
+        let bytes = vec![0; 15];
+        let result = PersistentContext::from_bytes(&bytes);
+        assert!(result.is_err());
+        assert_eq!(ErrorCode::InternalError, result.as_ref().unwrap_err().0);
+        assert!(result.unwrap_err().1.contains(PersistentContext::ERROR_MSG_INSUFFICIENT_DATA));
+    }
+
+    #[test]
+    fn test_persistent_context_from_bytes_min_size_error() {
+        let bytes = vec![0; 16];
+        let result = PersistentContext::from_bytes(&bytes);
+        assert!(result.is_err());
+        assert_eq!(ErrorCode::InternalError, result.as_ref().unwrap_err().0);
+        assert!(result.unwrap_err().1.contains(PersistentContext::ERROR_MSG_INSUFFICIENT_DATA));
+    }
 }

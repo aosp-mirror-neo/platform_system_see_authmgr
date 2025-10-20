@@ -30,8 +30,8 @@ rust_library {
 }
 
 rust_test {
-    name: "libauthmgr_be_unit_test",
-    crate_name: "authmgr_be_unit_test",
+    name: "libauthmgr_be_protocol_test",
+    crate_name: "authmgr_be_protocol_test",
     srcs: ["src/lib.rs"],
     host_supported: true,
     test_suites: ["general-tests"],

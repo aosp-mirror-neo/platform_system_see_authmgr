@@ -1,7 +1,0 @@
-{
-  "postsubmit": [
-    {
-      "name": "libauthmgr_common_unit_test"
-    }
-  ]
-}

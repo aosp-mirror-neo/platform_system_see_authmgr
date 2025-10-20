@@ -15,28 +15,18 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 //! Traits representing crypto abstractions and device specific functionality
-use crate::data_structures::{
-    ClientId, ConnectionAuthState, PersistentClientContext, PersistentInstanceContext,
-};
+use crate::data_structures::{ClientId, ConnectionAuthState};
 use crate::error::Error;
 use alloc::boxed::Box;
-use alloc::sync::Arc;
-use authgraph_core::key::{CertChain, InstanceIdentifier, Policy};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use authgraph_core::key::{CertChain, InstanceIdentifier};
 use authmgr_common::signed_connection_request::TransportID;
 
 /// Trait defining device specific functionality
 pub trait Device: Send {
     /// Return the transport ID of the AuthMgr BE
     fn get_self_transport_id(&self) -> Result<TransportID, Error>;
-
-    /// Secure storage invariant: we cannot allow a non-persistent pVM connect to secure storage
-    /// without the secure storage knowing that it is a non-persistent client. Therefore, the
-    /// AuthMgr BE should know whether a given pVM is persistent. In the first version of the
-    /// trusted HAL project, we only support persistent pVM clients, therefore, in the first
-    /// version, this could simply return true. When non-persistent pVMs are supported, it is
-    /// expected that the AuthMgr BE learns via some out-of-band mechanism the instance ids of the
-    /// persistence pVMs on the device.
-    fn is_persistent_instance(&self, instance_id: &InstanceIdentifier) -> Result<bool, Error>;
 
     /// Connect to the trusted service identified by `service_name` and hand over the client
     /// connection along with the client's unique sequence number.
@@ -115,8 +105,9 @@ pub trait RawConnection: Send {
     fn into_raw_fd(self: Box<Self>) -> i32;
 }
 
-/// Following traits define the storage related functionality for AuthMgr BE. The AuthMgr BE
-/// need to store three types of information:
+/// The following traits define the storage related functionality for AuthMgr BE.
+///
+/// The AuthMgr BE needs to store three types of information:
 /// 1) The latest global sequence number - this is used to assign a unique id for instances and
 ///    clients. Uniqueness is preserved across factory resets because this is stored in the
 ///    persistent storage. It is important to preserve the uniqueness across factory resets in order
@@ -132,89 +123,103 @@ pub trait RawConnection: Send {
 /// 3) Client contexts - information related to a client in an instance, such as client sequence
 ///    number, DICE policy for the client's DICE certificate, etc. The information contained in a
 ///    client context may vary depending on whether the client is persistent or not. The path to the
-///    storage of a client context is uniquely identified by the instance sequence number and the
-///    client id - so that the storage artifact containing the client context can be queried during
-///    phase 2 of the protocol, given the instance sequence number given by phase 1 of the
-///    protocol and the client id provided by the AuthMgr FE in phase 2.
-///
-/// TODO: b/398286643
-/// The storage trait will be simplified to have just two methods to read and write a file
-/// as mentioned in the above bug, once the encoding and decoding is implemented for the relevant
-/// structures.
-/// We require the vendor to implement the Storage trait for both persistent and non-persistent
-/// storage because this reduces the potential errors in the vendor code which otherwise would have
-/// to handle a boolean passed to each trait method, indicating whether the method should deal with
-/// the persistent or non persistent storage. We move that complexity to the generic code by having
-/// the Storage trait implemented for the two types of storage.
+///    storage of a client context is uniquely identified by the combination of the
+///    instance identifier, instance sequence number and the client id - so that the storage
+///    artifacts containing the client context can be queried during phase 2 of the protocol, given
+///    the instance id, instance sequence number from phase 1 of the protocol and the client id
+///    provided by the AuthMgr FE in phase 2.
+///    TODO: b/443130600 - Optimization: Introduce the notion of a transaction and commit to the
+///    Storage trait.
 pub trait Storage: Send {
-    /// Instance context
-    type InstanceContext;
-    /// Client context
-    type ClientContext;
+    /// Read data from given the file path. If the file path does not exist, return None.
+    fn read(&self, file_path: &str) -> Result<Option<Vec<u8>>, Error>;
 
-    /// Use this method to update the instance's DICE policy in the secure storage.
-    fn update_instance_policy_in_storage(
-        &mut self,
-        instance_id: &Arc<InstanceIdentifier>,
-        latest_dice_policy: &Arc<Policy>,
-    ) -> Result<(), Error>;
+    /// Write the given data at the given file path.
+    /// If WriteMode = OverwriteExisting, the intention is to update an existing file. It is
+    /// important to make sure that all the existing data is discarded before writing the new data.
+    /// If there is no existing file in the given path, return an error.
+    /// If WriteMode = CreateExclusive, the intention is to create a new file. If a file already
+    /// exists in the given file path, return an error.
+    fn write(&mut self, file_path: &str, data: &[u8], write_mode: WriteMode) -> Result<(), Error>;
 
-    /// Use this method to update the client's DICE policy.
-    fn update_client_policy_in_storage(
-        &mut self,
-        instance_seq_number: i64,
-        client_id: &Arc<ClientId>,
-        latest_dice_policy: &Arc<Policy>,
-    ) -> Result<(), Error>;
+    /// Following helper methods (with default implementations) are added as part of the trait
+    /// because the underlying storage may have restrictions w.r.t the characters used in the
+    /// file paths.
+    /// Following is how the file paths for the three types of files are constructed in the
+    /// helper methods that follow:
+    /// 1. The file that stores the global sequence number:
+    ///    "GLOBAL_SEQ_NUM"
+    /// 2. The file(s) that store the instance contexts:
+    ///    instance_context_file_prefix + storage_path_separator + hex_encoded_instance_id
+    /// 3. The file(s) that store the client contexts:
+    ///    client_context_file_prefix + storage_path_separator + hex_encoded_instance_id +
+    ///    instance_seq_num + storage_path_separator + hex_encoded_client_id
+    ///
+    /// Helper method with a default implementation to build the file path for an instance context.
+    fn build_storage_file_path_for_instance(&self, instance_id: &InstanceIdentifier) -> String {
+        let mut path = String::from(self.get_instance_context_storage_prefix());
+        path.push_str(self.get_authmgr_be_storage_path_separator());
+        path.push_str(&hex::encode(instance_id));
+        path
+    }
 
-    /// Retrieve the information stored in the secure storage for the instance identified by the
-    /// given instance identifier, if it exists in the AuthMgr BE's secure storage,
-    /// otherwise, return None.
-    fn read_instance_context(
+    /// Helper method with a default implementation to build the file path for a client context.
+    fn build_storage_file_path_for_client(
         &self,
-        instance_id: &Arc<InstanceIdentifier>,
-    ) -> Result<Option<Self::InstanceContext>, Error>;
+        instance_id: &InstanceIdentifier,
+        vm_seq_num: i64,
+        client_id: &ClientId,
+    ) -> String {
+        let mut path = String::from(self.get_client_context_storage_prefix());
+        path.push_str(self.get_authmgr_be_storage_path_separator());
+        path.push_str(&hex::encode(instance_id));
+        path.push_str(self.get_authmgr_be_storage_path_separator());
+        path.push_str(vm_seq_num.to_string().as_str());
+        path.push_str(self.get_authmgr_be_storage_path_separator());
+        path.push_str(&hex::encode(&client_id.0));
+        path
+    }
 
-    /// Create the context for a particular pvm instance in the secure storage. The implementation
-    /// of this method should make sure that there are no other instances created same instance id.
-    /// This is important to enforce Trust On First Use (TOFU).
-    fn create_instance_context(
-        &mut self,
-        instance_id: &Arc<InstanceIdentifier>,
-        instance_info: Self::InstanceContext,
-    ) -> Result<(), Error>;
+    /// Helper method to get the separator character used when constructing file paths.
+    fn get_authmgr_be_storage_path_separator(&self) -> &'static str {
+        const AUTHMGR_BE_STORAGE_SEPARATOR: &str = "-";
+        AUTHMGR_BE_STORAGE_SEPARATOR
+    }
 
-    /// Retrieve the information stored in the secure storage for the client identified by the
-    /// sequence number of the instance it belongs to and the client id, if it exists in the
-    /// AuthMgr BE's secure storage, otherwise, return None.
-    fn read_client_context(
-        &self,
-        instance_seq_number: i64,
-        client_id: &Arc<ClientId>,
-    ) -> Result<Option<Self::ClientContext>, Error>;
+    /// Helper method to get the file path for the storage location of the global sequence number.
+    fn get_global_seq_num_storage_path(&self) -> &'static str {
+        const GLOBAL_SEQ_NUM_STORAGE_PATH: &str = "GLOBAL_SEQ_NUM";
+        GLOBAL_SEQ_NUM_STORAGE_PATH
+    }
 
-    /// Initialize the secure storage for a particular client. The implementation of this method
-    /// should make sure that there are no clients created with the same client id for the given
-    /// instance.
-    fn create_client_context(
-        &mut self,
-        instance_seq_number: i64,
-        client_id: &Arc<ClientId>,
-        client_info: Self::ClientContext,
-    ) -> Result<(), Error>;
+    /// Helper method to get the file path prefix for the storage of the instance contexts.
+    fn get_instance_context_storage_prefix(&self) -> &'static str {
+        const INSTANCE_CONTEXT_STORAGE_PREFIX: &str = "INSTANCE_CONTEXT";
+        INSTANCE_CONTEXT_STORAGE_PREFIX
+    }
+
+    /// Helper method to get the file path prefix for the storage of the client contexts.
+    fn get_client_context_storage_prefix(&self) -> &'static str {
+        const CLIENT_CONTEXT_STORAGE_PREFIX: &str = "CLIENT_CONTEXT";
+        CLIENT_CONTEXT_STORAGE_PREFIX
+    }
 }
 
-/// Trait defining the persistent storage specific functionality.
-/// (This is temporary, until b/398286643 is resolved)
-pub trait PersistentStorage:
-    Storage<InstanceContext = PersistentInstanceContext, ClientContext = PersistentClientContext>
-{
-    /// Retrieve the global sequence number stored in the factory-reset surviving secure storage of
-    /// the AuthMgr BE. If it does not already exist, initialize it from 0.
-    fn get_or_create_global_sequence_number(&mut self) -> Result<i64, Error>;
-
-    /// Increment the global sequence number stored in the factory-reset surviving secure storage of
-    /// the AuthMgr BE. Return the latest global sequence number if successful andan error if it
-    /// does not exist in the AuthMgr BE's secure storage.
-    fn increment_global_sequence_number(&mut self) -> Result<i64, Error>;
+/// An enum to express the storage write options.
+pub enum WriteMode {
+    /// Create the file and write to it, return an error if it already exists
+    /// (i.e. overwrite = false)
+    CreateExclusive,
+    /// Overwrite an existing file, return an error if the file does not already exist
+    /// (i.e. overwrite = true)
+    OverwriteExisting,
 }
+
+/// We require the vendor to implement the Storage trait for both persistent and non-persistent
+/// storage because this reduces the potential errors in the vendor code which otherwise would
+/// have to handle a boolean passed to each trait method, indicating whether the method should
+/// deal with the persistent or non persistent storage. We move that complexity to the generic
+/// code by requiring the Storage trait to be implemented for the two types of storage.
+/// TODO: b/399707150 - support non-persistent instances in the future.
+/// Persistent Storage, inheriting the Storage trait.
+pub trait PersistentStorage: Storage {}

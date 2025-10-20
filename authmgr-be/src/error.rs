@@ -108,6 +108,12 @@ impl From<::alloc::collections::TryReserveError> for Error {
     }
 }
 
+impl From<::core::array::TryFromSliceError> for Error {
+    fn from(e: core::array::TryFromSliceError) -> Self {
+        crate::am_err!(InternalError, "failed to construct array from slice: {:?}", e)
+    }
+}
+
 /// Macro to build an [`struct@crate::error::Error`] instance.
 /// E.g. use: `am_err!(InternalError, "some {} format", arg)`.
 #[macro_export]
@@ -130,7 +136,15 @@ pub enum PolicyMatchingError {
     #[error("memory allocation failed due to: {0}")]
     MemoryAllocationFailed(#[from] alloc::collections::TryReserveError),
 
-    /// AuthMgr error
+    /// Invalid DICE Policy
+    #[error("invalid DICE policy")]
+    InvalidDicePolicy,
+
+    /// AuthMgrCommonError
     #[error("authmgr error: {0}")]
     AuthMgrCommonError(#[from] AMError),
+
+    /// Internal error
+    #[error("internal error")]
+    InternalError,
 }
