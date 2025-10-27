@@ -49,12 +49,8 @@ pub type Challenge = [u8; 32];
 /// Type alias for transport id (a.k.a. VM ID)
 pub type TransportID = u16;
 
-/// This is a temporary measure to use a hardcoded transport id for AuthMgr BE.
-/// TODO: b/392905377
-pub const TEMP_AUTHMGR_BE_TRANSPORT_ID: u16 = u16::from_le_bytes([0x24, 0x12]);
-/// This is a temporary measure to use a hardcoded transport id for AuthMgr FE.
-/// TODO: b/392905377
-pub const TEMP_AUTHMGR_FE_TRANSPORT_ID: u16 = u16::from_le_bytes([0x06, 0x12]);
+/// This is the hardcoded SP-ID id for AuthMgr BE, to be used by AuthMgr FE.
+pub const AUTHMGR_BE_TRANSPORT_ID: u16 = 0x8001_u16;
 
 /// External AAD to be added to any Sig_structure signed by the DICE signing key, with the mandatory
 /// field of `uuid_of_payload_struct` of type UUID v4 (RFC 9562). This field is required to ensure

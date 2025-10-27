@@ -25,7 +25,7 @@ use authgraph_core_test::{
 use authmgr_be::authorization::AuthMgrBE;
 use authmgr_be::data_structures::MemoryLimits;
 use authmgr_be_test::{test_auth_mgr_protocol_succeeds_single_pvm, Client, PVM};
-use authmgr_common::signed_connection_request::TEMP_AUTHMGR_BE_TRANSPORT_ID;
+use authmgr_common::signed_connection_request::AUTHMGR_BE_TRANSPORT_ID;
 use authmgr_common_util::{
     get_constraint_spec_for_static_trusty_ta, get_constraints_spec_for_trusty_vm,
     policy_for_dice_node,
@@ -110,7 +110,7 @@ fn test_auth_mgr_protocol_single_pvm() {
     let mut allowed_persistent_instances = HashMap::<InstanceIdentifier, Policy>::new();
     allowed_persistent_instances.insert(pvm_instance_id.clone(), dice_policy);
 
-    let device = AuthMgrBeDevice::new(TEMP_AUTHMGR_BE_TRANSPORT_ID, allowed_persistent_instances);
+    let device = AuthMgrBeDevice::new(AUTHMGR_BE_TRANSPORT_ID, allowed_persistent_instances);
 
     let mut authmgr_be = AuthMgrBE::new(
         crate::crypto_trait_impls(),
