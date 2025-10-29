@@ -82,6 +82,10 @@ pub enum Error {
     /// Errors encountered when converting integer types in AIDL calls
     #[error(transparent)]
     IntConversion(#[from] TryFromIntError),
+
+    /// Fallible allocation error
+    #[error("Failed to allocate memory")]
+    MemoryAllocationFailed(#[from] alloc::collections::TryReserveError),
 }
 
 /// `Result`` type for storage wrapper
