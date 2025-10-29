@@ -24,7 +24,8 @@ use android_hardware_security_see_storage::aidl::android::hardware::security::se
     IStorageSession::IStorageSession, Integrity::Integrity, OpenOptions::OpenOptions,
 };
 use android_hardware_security_see_storage::binder::Strong;
-use log::{debug, trace};
+use core::sync::atomic::{AtomicBool, Ordering};
+use log::{debug, trace, warn};
 
 /// Secure storage service name
 pub const DEFAULT_SECURE_STORAGE_SERVICE_NAME: &str =
@@ -40,6 +41,9 @@ pub const TAMPER_PROOF_EARLY_ACCESS_PERSISTENT_FS: Filesystem = Filesystem {
 /// Encapsulate a secure storage session
 pub struct Session {
     inner: Strong<dyn IStorageSession>,
+    /// Tracks if any write operations (e.g., `write`, `delete_file`)
+    /// have been performed during this session. This is thread-safe.
+    pub(crate) is_dirty: AtomicBool,
 }
 
 impl Session {
@@ -53,12 +57,15 @@ impl Session {
         trace!("connecting to secure storage service...");
         let inner = storage_binder.startSession(file_system)?;
         debug!("successfully connected to secure storage service.");
-        Ok(Session { inner })
+        Ok(Session { inner, is_dirty: AtomicBool::new(false) })
     }
 
-    /// Use this function to explicitly close the session before the session object goes out of
-    /// scope
-    pub fn close(self) {}
+    /// Uses this function to explicitly close the session before the session object goes out of
+    /// scope. This function commits any pending changes before the session is destroyed.
+    pub fn close(self) -> Result<()> {
+        self.commit()?;
+        Ok(())
+    }
 
     /// Opens a file with the given path and options
     ///
@@ -74,6 +81,7 @@ impl Session {
 
     /// Deletes a file.
     pub fn delete_file(&self, path: &str) -> Result<()> {
+        self.is_dirty.store(true, Ordering::Relaxed);
         self.inner.deleteFile(path).map_err(|status| file_op_error_to_storage_error(status, path))
     }
 
@@ -105,6 +113,25 @@ impl Session {
 
     /// Commit changes
     pub fn commit(&self) -> Result<()> {
-        Ok(self.inner.commitChanges()?)
+        if self.is_dirty.load(Ordering::Relaxed) {
+            // TODO(b/433726493): Investigate using `stageChangesForCommitOnAbUpdateComplete` for
+            // commit.
+            // The API allows staging changes during an A/B update, which is safer than a direct
+            // commit.
+            self.inner.commitChanges()?;
+            self.is_dirty.store(false, Ordering::Relaxed);
+        } else {
+            debug!("Session is clean, commit skipped.");
+        }
+        Ok(())
+    }
+}
+
+impl Drop for Session {
+    fn drop(&mut self) {
+        // Warn if the session is still marked as dirty when dropped.
+        if self.is_dirty.load(Ordering::Relaxed) {
+            warn!("storage session dropped with uncommitted changes");
+        }
     }
 }

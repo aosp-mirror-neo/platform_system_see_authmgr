@@ -22,6 +22,7 @@ use android_hardware_security_see_storage::aidl::android::hardware::security::se
     CreationMode::CreationMode, FileMode::FileMode, IFile::IFile, OpenOptions::OpenOptions,
 };
 use android_hardware_security_see_storage::binder::Strong;
+use core::sync::atomic::Ordering;
 
 /// Options for opening a file for writing and reading, creating it if needed.
 pub const OPEN_READ_WRITE: OpenOptions = OpenOptions {
@@ -57,14 +58,14 @@ pub const OPEN_EXISTING_FOR_OVERWRITE: OpenOptions = OpenOptions {
 /// that the session always outlives any file handles associated with it.
 pub struct File<'a> {
     inner: Strong<dyn IFile>,
-    _session: &'a Session,
+    session: &'a Session,
 }
 
 impl File<'_> {
     /// Constructor to be used when returning a file object when open_file is called on a storage
     /// session.
-    pub fn new<'a>(file: Strong<dyn IFile>, _session: &'a Session) -> File<'a> {
-        File { inner: file, _session }
+    pub fn new<'a>(file: Strong<dyn IFile>, session: &'a Session) -> File<'a> {
+        File { inner: file, session }
     }
 
     /// Gets the size of the file in bytes.
@@ -97,6 +98,7 @@ impl File<'_> {
     ///
     /// Returns the number of bytes written.
     pub fn write_at(&self, offset: usize, buffer: &[u8]) -> Result<usize> {
+        self.session.is_dirty.store(true, Ordering::Relaxed);
         Ok(self.inner.write(offset.try_into()?, buffer)?.try_into()?)
     }
 
@@ -105,6 +107,7 @@ impl File<'_> {
     /// This method ensures that all bytes from the buffer are written. It returns an
     /// error if the number of bytes written does not match the buffer's length.
     pub fn write_all_at(&self, offset: usize, buffer: &[u8]) -> Result<()> {
+        self.session.is_dirty.store(true, Ordering::Relaxed);
         let size_written = self.write_at(offset, buffer)?;
 
         if size_written == buffer.len() {
