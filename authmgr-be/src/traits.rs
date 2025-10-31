@@ -15,12 +15,12 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 //! Traits representing crypto abstractions and device specific functionality
-use crate::data_structures::{ClientId, ConnectionAuthState};
+use crate::data_structures::{ClientId, ConnectionAuthState, InstanceIdentifier};
 use crate::error::Error;
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use authgraph_core::key::{CertChain, InstanceIdentifier};
+use authgraph_core::key::CertChain;
 use authmgr_common::signed_connection_request::TransportID;
 
 /// Trait defining device specific functionality
@@ -172,7 +172,7 @@ pub trait Storage: Send {
     fn build_storage_file_path_for_instance(&self, instance_id: &InstanceIdentifier) -> String {
         let mut path = String::from(self.get_instance_context_storage_prefix());
         path.push_str(self.get_authmgr_be_storage_path_separator());
-        path.push_str(&hex::encode(instance_id));
+        path.push_str(&hex::encode(instance_id.0));
         path
     }
 
@@ -185,7 +185,7 @@ pub trait Storage: Send {
     ) -> String {
         let mut path = String::from(self.get_client_context_storage_prefix());
         path.push_str(self.get_authmgr_be_storage_path_separator());
-        path.push_str(&hex::encode(instance_id));
+        path.push_str(&hex::encode(instance_id.0));
         path.push_str(self.get_authmgr_be_storage_path_separator());
         path.push_str(vm_seq_num.to_string().as_str());
         path.push_str(self.get_authmgr_be_storage_path_separator());
