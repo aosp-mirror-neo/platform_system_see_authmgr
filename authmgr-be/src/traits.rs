@@ -50,9 +50,22 @@ pub trait Device: Send {
     /// allowed to be created.
     fn is_persistent_instance_creation_allowed(
         &self,
-        instance_id: &InstanceIdentifier,
-        dice_chain: &CertChain,
-    ) -> Result<bool, Error>;
+        _instance_id: &InstanceIdentifier,
+        _dice_chain: &CertChain,
+    ) -> Result<bool, Error> {
+        // The default implementation allows creation of persistent vms if TEE is in the factory
+        // provisioning stage.
+        self.is_factory_provisioning_allowed()
+    }
+
+    /// Return true if TEE  is in the factory provisioning stage.
+    /// This information is useful to make two decisions in authmgr protocol:
+    /// 1. whether to allow creation of persistent vms (persistent vms are allowed to be created by
+    ///    default if the TEE is in the factory provisioning stage)
+    /// 2. whether to skip deletion of certain test-vms that needs to survive reboot, at the boot
+    ///    time of authmgr-be (all test-vms are deleted by default during reboot if the TEE is not
+    ///    in the factory provisioning stage)
+    fn is_factory_provisioning_allowed(&self) -> Result<bool, Error>;
 }
 
 /// Trait defining RPC connection specific functionality required by AuthMgr BE

@@ -22,7 +22,7 @@
 //! run unit tests using the aforementioned (example) trait implementations.
 extern crate alloc;
 use authgraph_boringssl::{ec::BoringEcDsa, BoringRng};
-use authgraph_core::key::{CertChain, InstanceIdentifier, Policy};
+use authgraph_core::key::{InstanceIdentifier, Policy};
 use authmgr_be::error::Error;
 use authmgr_be::traits::{Device, RawConnection};
 use authmgr_common::{signed_connection_request::TransportID, CryptoTraitImpl};
@@ -74,13 +74,8 @@ impl Device for AuthMgrBeDevice {
         Ok(())
     }
 
-    /// Check whether the persistent instance with the given instance id and the dice cert chain is
-    /// allowed to be created. Return true in the mock implementation of the trait.
-    fn is_persistent_instance_creation_allowed(
-        &self,
-        _instance_id: &InstanceIdentifier,
-        _dice_chain: &CertChain,
-    ) -> Result<bool, Error> {
+    fn is_factory_provisioning_allowed(&self) -> Result<bool, Error> {
+        // The mock implementation returns true
         Ok(true)
     }
 }
