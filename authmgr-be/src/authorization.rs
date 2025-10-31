@@ -86,7 +86,7 @@ impl AuthMgrBE {
     /// Initialize AuthMgr BE
     pub fn new(
         crypto: CryptoTraitImpl,
-        device: Box<dyn Device>,
+        mut device: Box<dyn Device>,
         mut persistent_storage: Box<dyn PersistentStorage>,
         memory_limits: MemoryLimits,
     ) -> Result<Self, Error> {
@@ -104,6 +104,9 @@ impl AuthMgrBE {
         // initialize the global sequence number, otherwise, read it from the AuthMgr BE's storage
         let latest_global_sequence_number =
             LatestGlobalSeqNum(get_or_create_global_sequence_number(&mut *persistent_storage)?);
+
+        device.do_maintenance_during_boot(&mut *persistent_storage)?;
+
         Ok(AuthMgrBE {
             crypto,
             device,

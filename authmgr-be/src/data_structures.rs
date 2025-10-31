@@ -772,6 +772,8 @@ pub struct ClientMetaData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traits::{Storage, WriteMode};
+    use alloc::string::String;
     use alloc::sync::Arc;
     use alloc::vec;
     use authgraph_core_test::{
@@ -889,5 +891,48 @@ mod tests {
         let instance_id = InstanceIdentifier::new_for_test_vm(secondary_uuid);
         assert!(instance_id.is_test());
         assert!(instance_id.is_persistent());
+    }
+
+    #[test]
+    fn test_context_file_name_with_instance_id_roundtrip() {
+        struct MockDevice;
+        impl Storage for MockDevice {
+            fn read(&self, _file_path: &str) -> Result<Option<Vec<u8>>, Error> {
+                unimplemented!()
+            }
+            fn write(
+                &mut self,
+                _file_path: &str,
+                _data: &[u8],
+                _write_mode: WriteMode,
+            ) -> Result<(), Error> {
+                unimplemented!()
+            }
+            fn list_file_names(&self) -> Result<Vec<String>, Error> {
+                unimplemented!()
+            }
+            fn delete_file(&mut self, _file_path: &str) -> Result<(), Error> {
+                unimplemented!()
+            }
+        }
+        let dev = MockDevice;
+        let test_vm_context_file_name =
+            dev.build_storage_file_path_for_instance(&TEST_VM_INSTANCE_ID);
+        let extracted_test_vm_instance_id = dev
+            .extract_instance_id_from_context_file_name(&test_vm_context_file_name)
+            .expect("error in extracting instance id from test vm context file name");
+        assert_eq!(extracted_test_vm_instance_id, TEST_VM_INSTANCE_ID);
+
+        // client UUID = c0b68b1d-2dce-42ea-8398-ccc4b614b43c
+        let client_id = vec![
+            0xc0, 0xb6, 0x8b, 0x1d, 0x2d, 0xce, 0x42, 0xea, 0x83, 0x98, 0xcc, 0xc4, 0xb6, 0x14,
+            0xb4, 0x3c,
+        ];
+        let test_vm_client_context_file_name =
+            dev.build_storage_file_path_for_client(&TEST_VM_INSTANCE_ID, 12, &ClientId(client_id));
+        let extracted_instance_id = dev
+            .extract_instance_id_from_context_file_name(&test_vm_client_context_file_name)
+            .expect("error in extracting instance id from test vm client context file name");
+        assert_eq!(extracted_instance_id, TEST_VM_INSTANCE_ID);
     }
 }

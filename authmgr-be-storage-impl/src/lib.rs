@@ -18,6 +18,7 @@
 //! the AIDL interface of the secure storage.
 #![no_std]
 extern crate alloc;
+use alloc::string::String;
 use alloc::vec::Vec;
 use authmgr_be::{
     am_err,
@@ -87,6 +88,19 @@ impl Storage for SecureStorage {
         };
         file.write_all_at(0, data)
             .map_err(|e| am_err!(InternalError, "error in writing to the file: {:?}", e))?;
+        self.session.commit().map_err(|e| am_err!(InternalError, "error in committing: {:?}", e))
+    }
+
+    fn list_file_names(&self) -> Result<Vec<String>, Error> {
+        self.session
+            .list_files_in_dir("")
+            .map_err(|e| am_err!(InternalError, "error in listing the files: {:?}", e))
+    }
+
+    fn delete_file(&mut self, file_path: &str) -> Result<(), Error> {
+        self.session.delete_file(file_path).map_err(|e| {
+            am_err!(InternalError, "error {:?} in deleting file: {:?}", e, file_path)
+        })?;
         self.session.commit().map_err(|e| am_err!(InternalError, "error in committing: {:?}", e))
     }
 }
