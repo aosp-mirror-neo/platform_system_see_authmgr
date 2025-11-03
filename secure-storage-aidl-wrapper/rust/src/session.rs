@@ -17,6 +17,8 @@
 //! Module that implements a session for accessing the secure storage
 use crate::error::{file_op_error_to_storage_error, Result};
 use crate::file::File;
+use alloc::string::String;
+use alloc::vec::Vec;
 use android_hardware_security_see_storage::aidl::android::hardware::security::see::storage::{
     Availability::Availability, Filesystem::Filesystem, ISecureStorage::ISecureStorage,
     IStorageSession::IStorageSession, Integrity::Integrity, OpenOptions::OpenOptions,
@@ -73,6 +75,32 @@ impl Session {
     /// Deletes a file.
     pub fn delete_file(&self, path: &str) -> Result<()> {
         self.inner.deleteFile(path).map_err(|status| file_op_error_to_storage_error(status, path))
+    }
+
+    /// Lists all filenames in the given directory path.
+    ///
+    /// This method handles the pagination of the underlying `IDir` interface,
+    /// returning a complete list of all files in the directory.
+    pub fn list_files_in_dir(&self, path: &str) -> Result<Vec<String>> {
+        trace!("Listing files in directory: {path}");
+        let dir = self
+            .inner
+            .openDir(path)
+            .map_err(|status| file_op_error_to_storage_error(status, path))?;
+
+        let mut all_filenames = Vec::new();
+        loop {
+            // A maxCount of 0 signifies no limit.
+            let filenames = dir.readNextFilenames(0)?;
+            if filenames.is_empty() {
+                break;
+            }
+            all_filenames.try_reserve(filenames.len())?;
+            all_filenames.extend(filenames);
+        }
+
+        debug!("Found {path} files in directory '{}'", all_filenames.len());
+        Ok(all_filenames)
     }
 
     /// Commit changes
