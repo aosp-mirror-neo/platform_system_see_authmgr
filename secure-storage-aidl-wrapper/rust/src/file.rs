@@ -64,7 +64,7 @@ pub struct File<'a> {
 impl File<'_> {
     /// Constructor to be used when returning a file object when open_file is called on a storage
     /// session.
-    pub fn new<'a>(file: Strong<dyn IFile>, session: &'a Session) -> File<'a> {
+    pub(crate) fn new<'a>(file: Strong<dyn IFile>, session: &'a Session) -> File<'a> {
         File { inner: file, session }
     }
 
