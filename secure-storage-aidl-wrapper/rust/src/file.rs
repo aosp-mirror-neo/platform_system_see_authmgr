@@ -76,7 +76,19 @@ impl File<'_> {
     /// Reads the entire content of the file.
     pub fn read_all(&self) -> Result<Vec<u8>> {
         let size = self.get_size()?;
-        self.read_at(0, size)
+        self.read_all_at(0, size)
+    }
+
+    /// Reads exactly `size` bytes from the file starting at a specific `offset`.
+    ///
+    /// Returns an error if the number of bytes read does not match the requested size.
+    pub fn read_all_at(&self, offset: usize, size: usize) -> Result<Vec<u8>> {
+        let data = self.read_at(offset, size)?;
+        if data.len() == size {
+            Ok(data)
+        } else {
+            Err(Error::ReadSizeMismatch { expected: size, actual: data.len() })
+        }
     }
 
     /// Reads `size` bytes from the file starting at a specific `offset`.
@@ -86,12 +98,21 @@ impl File<'_> {
     /// read (chunk) size.
     pub fn read_at(&self, offset: usize, size: usize) -> Result<Vec<u8>> {
         let data = self.inner.read(size.try_into()?, offset.try_into()?)?;
-        // TODO: add a method: `read_all_at` to enable reading the exact number of bytes requested
         if data.len() <= size {
             Ok(data)
         } else {
             Err(Error::ReadSizeMismatch { expected: size, actual: data.len() })
         }
+    }
+
+    /// Reads an array of `N` bytes from a specific offset.
+    pub fn read_array_at<const N: usize>(&self, offset: usize) -> Result<[u8; N]> {
+        let data_vec = self.read_all_at(offset, N)?;
+        // TODO(b/451483572): Use slice_as_array to avoid redundant copy for the vector to array
+        // conversion below.
+        data_vec
+            .try_into()
+            .map_err(|vec: Vec<_>| Error::ReadSizeMismatch { expected: N, actual: vec.len() })
     }
 
     /// Writes a buffer to the file at a given `offset`.
