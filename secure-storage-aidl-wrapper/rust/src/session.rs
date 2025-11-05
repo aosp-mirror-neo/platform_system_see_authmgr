@@ -15,8 +15,8 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 //! Module that implements a session for accessing the secure storage
-use crate::error::{file_op_error_to_storage_error, Result};
-use crate::file::File;
+use crate::error::{file_op_error_to_storage_error, Error, Result};
+use crate::file::{File, OPEN_EXISTING_FOR_READ_ONLY};
 use alloc::string::String;
 use alloc::vec::Vec;
 use android_hardware_security_see_storage::aidl::android::hardware::security::see::storage::{
@@ -83,6 +83,21 @@ impl Session {
     pub fn delete_file(&self, path: &str) -> Result<()> {
         self.is_dirty.store(true, Ordering::Relaxed);
         self.inner.deleteFile(path).map_err(|status| file_op_error_to_storage_error(status, path))
+    }
+
+    /// Reads the entire content of a file with the given `path`.
+    ///
+    /// # Returns
+    /// - `Ok(Some(content))`: The file content as a vector of bytes if the file exists and is read
+    ///   successfully.
+    /// - `Ok(None)`: If the file is not found (`Error::FileNotFound`).
+    /// - `Err(E)`: If any other I/O error occurs during file opening or reading.
+    pub fn read_file(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        match self.open_file(path, &OPEN_EXISTING_FOR_READ_ONLY) {
+            Ok(file) => file.read_all().map(Some),
+            Err(Error::FileNotFound(_)) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     /// Writes the entire buffer to a file at the given path with the specified open options.
