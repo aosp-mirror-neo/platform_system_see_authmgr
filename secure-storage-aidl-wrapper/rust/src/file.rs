@@ -73,6 +73,18 @@ impl File<'_> {
         Ok(self.inner.getSize()?.try_into()?)
     }
 
+    /// Checks if the file is empty.
+    pub fn is_empty(&self) -> Result<bool> {
+        self.get_size().map(|size| size == 0)
+    }
+
+    /// Sets the size of the file. This may truncate or expand the file.
+    pub fn set_size(&self, new_size: usize) -> Result<()> {
+        self.session.is_dirty.store(true, Ordering::Relaxed);
+        self.inner.setSize(new_size.try_into()?)?;
+        Ok(())
+    }
+
     /// Reads the entire content of the file.
     pub fn read_all(&self) -> Result<Vec<u8>> {
         let size = self.get_size()?;
