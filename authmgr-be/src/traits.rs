@@ -15,12 +15,13 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 //! Traits representing crypto abstractions and device specific functionality
-use crate::data_structures::{ClientId, ConnectionAuthState};
-use crate::error::Error;
+use crate::am_err;
+use crate::data_structures::{ClientId, ConnectionAuthState, InstanceIdentifier};
+use crate::error::{Error, ErrorCode};
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use authgraph_core::key::{CertChain, InstanceIdentifier};
+use authgraph_core::key::CertChain;
 use authmgr_common::signed_connection_request::TransportID;
 
 /// Trait defining device specific functionality
@@ -50,9 +51,66 @@ pub trait Device: Send {
     /// allowed to be created.
     fn is_persistent_instance_creation_allowed(
         &self,
-        instance_id: &InstanceIdentifier,
-        dice_chain: &CertChain,
-    ) -> Result<bool, Error>;
+        _instance_id: &InstanceIdentifier,
+        _dice_chain: &CertChain,
+    ) -> Result<bool, Error> {
+        // The default implementation allows creation of persistent vms if TEE is in the factory
+        // provisioning stage.
+        self.is_factory_provisioning_allowed()
+    }
+
+    /// Return true if TEE  is in the factory provisioning stage.
+    /// This information is useful to make two decisions in authmgr protocol:
+    /// 1. whether to allow creation of persistent vms (persistent vms are allowed to be created by
+    ///    default if the TEE is in the factory provisioning stage)
+    /// 2. whether to skip deletion of certain test-vms that needs to survive reboot, at the boot
+    ///    time of authmgr-be (all test-vms are deleted by default during reboot if the TEE is not
+    ///    in the factory provisioning stage)
+    fn is_factory_provisioning_allowed(&self) -> Result<bool, Error>;
+
+    /// This is an extension point to allow any maintenance tasks to be performed during (re-)boot
+    /// of the AuthMgr-BE. An example is deletion of the persistent test-vms, which the default
+    /// implementation does.
+    fn do_maintenance_during_boot(
+        &mut self,
+        persistent_storage: &mut dyn PersistentStorage,
+    ) -> Result<(), Error> {
+        let file_names = persistent_storage.list_file_names()?;
+        for file_name in file_names {
+            // Only the files storing test-vm contexts are relevant here.
+            if file_name == persistent_storage.get_global_seq_num_storage_path() {
+                continue;
+            }
+            let instance_id =
+                persistent_storage.extract_instance_id_from_context_file_name(&file_name)?;
+            if instance_id.is_test() {
+                if !self.is_factory_provisioning_allowed()? {
+                    // delete if the TEE is not in factory provisioning stage
+                    persistent_storage.delete_file(&file_name)?;
+                } else {
+                    // check if the given test-vm should survive reboot
+                    if !self.test_vm_survives_reboot(&instance_id) {
+                        persistent_storage.delete_file(&file_name)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// This is a helper method to check whether a given instance id belongs to a test-vm that needs
+    /// to survive reboot of AuthMgrBE. By default all test-vms are deleted during the reboot of
+    /// AuthMgrBE. This is an extension point to add an exception to that rule, so that certain
+    /// test-vms which are known to the AuthMgrBE TA implementation can survive a reboot for testing
+    /// purposes.
+    /// Note that the exceptions added through this extension point are honored only if the TEE is
+    /// in factory provisioning stage. All test-vms, regardless of any exceptions added through this
+    /// extension point will be deleted when the TEE moves from factory provisioning stage to
+    /// production stage.
+    /// The default implementation returns false.
+    fn test_vm_survives_reboot(&self, _instance_id: &InstanceIdentifier) -> bool {
+        false
+    }
 }
 
 /// Trait defining RPC connection specific functionality required by AuthMgr BE
@@ -142,6 +200,14 @@ pub trait Storage: Send {
     /// exists in the given file path, return an error.
     fn write(&mut self, file_path: &str, data: &[u8], write_mode: WriteMode) -> Result<(), Error>;
 
+    /// Retrieve the list of file names from AuthMgrBE storage.
+    /// This is mainly to identify the set of files to be deleted during maintenance tasks:
+    /// e.g. deleting files containing instance/client contexts during reboot.
+    fn list_file_names(&self) -> Result<Vec<String>, Error>;
+
+    /// Delete the file with the given path from the storage.
+    fn delete_file(&mut self, file_path: &str) -> Result<(), Error>;
+
     /// Following helper methods (with default implementations) are added as part of the trait
     /// because the underlying storage may have restrictions w.r.t the characters used in the
     /// file paths.
@@ -159,7 +225,7 @@ pub trait Storage: Send {
     fn build_storage_file_path_for_instance(&self, instance_id: &InstanceIdentifier) -> String {
         let mut path = String::from(self.get_instance_context_storage_prefix());
         path.push_str(self.get_authmgr_be_storage_path_separator());
-        path.push_str(&hex::encode(instance_id));
+        path.push_str(&hex::encode(instance_id.0));
         path
     }
 
@@ -172,12 +238,43 @@ pub trait Storage: Send {
     ) -> String {
         let mut path = String::from(self.get_client_context_storage_prefix());
         path.push_str(self.get_authmgr_be_storage_path_separator());
-        path.push_str(&hex::encode(instance_id));
+        path.push_str(&hex::encode(instance_id.0));
         path.push_str(self.get_authmgr_be_storage_path_separator());
         path.push_str(vm_seq_num.to_string().as_str());
         path.push_str(self.get_authmgr_be_storage_path_separator());
         path.push_str(&hex::encode(&client_id.0));
         path
+    }
+
+    /// Helper method with a default implementation to extract the instance-id from the given
+    /// instance/client context file name
+    fn extract_instance_id_from_context_file_name(
+        &self,
+        file_name: &str,
+    ) -> Result<InstanceIdentifier, Error> {
+        let file_path_components: Vec<&str> =
+            file_name.split(self.get_authmgr_be_storage_path_separator()).collect();
+        if file_path_components.len() < 2 {
+            return Err(am_err!(
+                InternalError,
+                "given file name is not in the expected format of an instance context file
+                 or a client context file."
+            ));
+        }
+        let prefix = file_path_components[0];
+        if prefix == self.get_instance_context_storage_prefix()
+            || prefix == self.get_client_context_storage_prefix()
+        {
+            let hex_encoded_instance_id = (&file_path_components)[1];
+            let instance_id = hex::decode(hex_encoded_instance_id)
+                .map_err(|e| am_err!(InternalError, "failed to decode instance id: {:?}", e))?;
+            InstanceIdentifier::try_new(&instance_id)
+        } else {
+            Err(am_err!(
+                InternalError,
+                "given file name is neither a instance context file nor a client context file."
+            ))
+        }
     }
 
     /// Helper method to get the separator character used when constructing file paths.

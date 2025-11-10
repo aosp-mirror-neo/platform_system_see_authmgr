@@ -24,7 +24,7 @@
 use authgraph_core::key::{CertChain, DiceChainEntry, EcSignKey, Policy};
 use authgraph_core::traits::{EcDsa, Rng};
 use authmgr_be::authorization::AuthMgrBE;
-use authmgr_be::data_structures::{ClientId, ConnectionAuthState};
+use authmgr_be::data_structures::{ClientId, ConnectionAuthState, InstanceIdentifier};
 use authmgr_be::error::Error;
 use authmgr_be::traits::{RawConnection, RpcConnection};
 use authmgr_common::{
@@ -201,11 +201,17 @@ impl RawConnection for RawConnectionInfo {
 
 /// Test the happy path for the full AuthMgr protocol with a single pvm instance.
 pub fn test_auth_mgr_protocol_succeeds_single_pvm(authmgr_be: &mut AuthMgrBE, mut pvm: PVM) {
+    // UUID = df261d53-3789-424b-8feb-7b80abae009c
+    let secondary_uuid: [u8; 16] = [
+        0xdf, 0x26, 0x1d, 0x53, 0x37, 0x89, 0x42, 0x4b, 0x8f, 0xeb, 0x7b, 0x80, 0xab, 0xae, 0x00,
+        0x9c,
+    ];
+    let instance_id = InstanceIdentifier::new_for_test_vm(secondary_uuid);
     let challenge: Challenge = authmgr_be
         .init_authentication(
             &mut pvm.rpc_connection,
             &pvm.dice_chain.clone().to_vec().expect("error in encoding the DICE chain"),
-            None,
+            Some(&instance_id.0),
         )
         .expect("init_auth failed");
     let signature =

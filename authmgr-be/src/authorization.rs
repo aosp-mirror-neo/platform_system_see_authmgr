@@ -21,7 +21,7 @@ use crate::{
         AuthStartedPvm, AuthStartedPvms, AuthenticatedConnectionInfo, AuthenticatedPvms,
         AuthorizedClient, AuthorizedClientFullDiceArtifacts, AuthorizedClientsGlobalList, ClientId,
         ClientInfoAtRollbackProtection, ClientMetaData, ConnectionAuthState, DiceArtifacts,
-        MemoryLimits, PendingClientAuthorization, PendingClientAuthorizations,
+        InstanceIdentifier, MemoryLimits, PendingClientAuthorization, PendingClientAuthorizations,
         PersistentClientContext, PersistentInstanceContext, PolicyMatchingResult,
         VERSION_PERSISTENT_CLIENT_CONTEXT, VERSION_PERSISTENT_INSTANCE_CONTEXT,
     },
@@ -32,7 +32,7 @@ use crate::{
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use authgraph_core::key::{CertChain, DiceChainEntry, InstanceIdentifier};
+use authgraph_core::key::{CertChain, DiceChainEntry};
 use authmgr_common::{
     extend_dice_policy_with, match_dice_cert_with_policy, match_dice_chain_with_policy,
     signed_connection_request::{Challenge, ConnectionRequest},
@@ -86,7 +86,7 @@ impl AuthMgrBE {
     /// Initialize AuthMgr BE
     pub fn new(
         crypto: CryptoTraitImpl,
-        device: Box<dyn Device>,
+        mut device: Box<dyn Device>,
         mut persistent_storage: Box<dyn PersistentStorage>,
         memory_limits: MemoryLimits,
     ) -> Result<Self, Error> {
@@ -104,6 +104,9 @@ impl AuthMgrBE {
         // initialize the global sequence number, otherwise, read it from the AuthMgr BE's storage
         let latest_global_sequence_number =
             LatestGlobalSeqNum(get_or_create_global_sequence_number(&mut *persistent_storage)?);
+
+        device.do_maintenance_during_boot(&mut *persistent_storage)?;
+
         Ok(AuthMgrBE {
             crypto,
             device,
@@ -150,12 +153,14 @@ impl AuthMgrBE {
         // Check if an instance id is provided in the optional parameter. If it is not present,
         // extract the instance id from the DICE chain.
         let instance_id: InstanceIdentifier = match ext_instance_id {
-            Some(instance_id) => instance_id.to_vec(),
-            None => cert_chain.extract_instance_identifier_in_guest_os_entry()?.ok_or(am_err!(
-                InvalidInstanceIdentifier,
-                "Instance identifier is neither present in
+            Some(instance_id) => InstanceIdentifier::try_new(instance_id)?,
+            None => {
+                return Err(am_err!(
+                    InvalidInstanceIdentifier,
+                    "Instance identifier is neither present in
                         the argument, nor in the DICE cert chain."
-            ))?,
+                ))
+            }
         };
 
         // Check for duplicated authentication attempts.
@@ -269,7 +274,7 @@ impl AuthMgrBE {
                 )
             })?;
 
-        let is_persistent = is_persistent_instance(&auth_started_entry.instance_id)?;
+        let is_persistent = auth_started_entry.instance_id.is_persistent();
         let instance_seq_number = if is_persistent {
             self.handle_instance_in_persistent_storage(
                 &auth_started_entry.instance_id,
@@ -502,7 +507,7 @@ impl AuthMgrBE {
     ) -> Result<ClientMetaData, PolicyMatchingError> {
         match self.authorized_clients.get(client_seq_number) {
             Some(client) => Ok(ClientMetaData {
-                instance_id: try_to_vec(&client.instance_id)?,
+                instance_id: InstanceIdentifier(client.instance_id.0),
                 client_id: ClientId(try_to_vec(&client.client_id.0)?),
                 is_persistent: client.is_persistent,
             }),
@@ -750,16 +755,6 @@ impl AuthMgrBE {
         }
         Ok(())
     }
-}
-
-// A helper function to distinguish persistent instances from non-persistent instances, given the
-// instance identifier.
-// Secure storage invariant: we cannot allow a non-persistent pVM connect to secure storage
-// without the secure storage knowing that it is a non-persistent client. Therefore, the
-// AuthMgr BE should know whether a given pVM is persistent or not.
-// TODO: b/417493963: Implement this based on the instance id partitioning scheme.
-fn is_persistent_instance(_instance_id: &InstanceIdentifier) -> Result<bool, Error> {
-    Ok(true)
 }
 
 // A helper function to read the global sequence number from the persistent storage. If reading for

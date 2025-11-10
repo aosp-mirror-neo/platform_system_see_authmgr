@@ -22,6 +22,7 @@ use android_hardware_security_see_storage::aidl::android::hardware::security::se
     CreationMode::CreationMode, FileMode::FileMode, IFile::IFile, OpenOptions::OpenOptions,
 };
 use android_hardware_security_see_storage::binder::Strong;
+use core::sync::atomic::Ordering;
 
 /// Options for opening a file for writing and reading, creating it if needed.
 pub const OPEN_READ_WRITE: OpenOptions = OpenOptions {
@@ -57,14 +58,14 @@ pub const OPEN_EXISTING_FOR_OVERWRITE: OpenOptions = OpenOptions {
 /// that the session always outlives any file handles associated with it.
 pub struct File<'a> {
     inner: Strong<dyn IFile>,
-    _session: &'a Session,
+    session: &'a Session,
 }
 
 impl File<'_> {
     /// Constructor to be used when returning a file object when open_file is called on a storage
     /// session.
-    pub fn new<'a>(file: Strong<dyn IFile>, _session: &'a Session) -> File<'a> {
-        File { inner: file, _session }
+    pub(crate) fn new<'a>(file: Strong<dyn IFile>, session: &'a Session) -> File<'a> {
+        File { inner: file, session }
     }
 
     /// Gets the size of the file in bytes.
@@ -72,10 +73,34 @@ impl File<'_> {
         Ok(self.inner.getSize()?.try_into()?)
     }
 
+    /// Checks if the file is empty.
+    pub fn is_empty(&self) -> Result<bool> {
+        self.get_size().map(|size| size == 0)
+    }
+
+    /// Sets the size of the file. This may truncate or expand the file.
+    pub fn set_size(&self, new_size: usize) -> Result<()> {
+        self.session.is_dirty.store(true, Ordering::Relaxed);
+        self.inner.setSize(new_size.try_into()?)?;
+        Ok(())
+    }
+
     /// Reads the entire content of the file.
     pub fn read_all(&self) -> Result<Vec<u8>> {
         let size = self.get_size()?;
-        self.read_at(0, size)
+        self.read_all_at(0, size)
+    }
+
+    /// Reads exactly `size` bytes from the file starting at a specific `offset`.
+    ///
+    /// Returns an error if the number of bytes read does not match the requested size.
+    pub fn read_all_at(&self, offset: usize, size: usize) -> Result<Vec<u8>> {
+        let data = self.read_at(offset, size)?;
+        if data.len() == size {
+            Ok(data)
+        } else {
+            Err(Error::ReadSizeMismatch { expected: size, actual: data.len() })
+        }
     }
 
     /// Reads `size` bytes from the file starting at a specific `offset`.
@@ -85,7 +110,6 @@ impl File<'_> {
     /// read (chunk) size.
     pub fn read_at(&self, offset: usize, size: usize) -> Result<Vec<u8>> {
         let data = self.inner.read(size.try_into()?, offset.try_into()?)?;
-        // TODO: add a method: `read_all_at` to enable reading the exact number of bytes requested
         if data.len() <= size {
             Ok(data)
         } else {
@@ -93,10 +117,21 @@ impl File<'_> {
         }
     }
 
+    /// Reads an array of `N` bytes from a specific offset.
+    pub fn read_array_at<const N: usize>(&self, offset: usize) -> Result<[u8; N]> {
+        let data_vec = self.read_all_at(offset, N)?;
+        // TODO(b/451483572): Use slice_as_array to avoid redundant copy for the vector to array
+        // conversion below.
+        data_vec
+            .try_into()
+            .map_err(|vec: Vec<_>| Error::ReadSizeMismatch { expected: N, actual: vec.len() })
+    }
+
     /// Writes a buffer to the file at a given `offset`.
     ///
     /// Returns the number of bytes written.
     pub fn write_at(&self, offset: usize, buffer: &[u8]) -> Result<usize> {
+        self.session.is_dirty.store(true, Ordering::Relaxed);
         Ok(self.inner.write(offset.try_into()?, buffer)?.try_into()?)
     }
 
@@ -105,6 +140,7 @@ impl File<'_> {
     /// This method ensures that all bytes from the buffer are written. It returns an
     /// error if the number of bytes written does not match the buffer's length.
     pub fn write_all_at(&self, offset: usize, buffer: &[u8]) -> Result<()> {
+        self.session.is_dirty.store(true, Ordering::Relaxed);
         let size_written = self.write_at(offset, buffer)?;
 
         if size_written == buffer.len() {

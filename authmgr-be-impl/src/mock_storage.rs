@@ -69,6 +69,19 @@ impl Storage for MockPersistentStorage {
             }
         }
     }
+
+    fn list_file_names(&self) -> Result<Vec<String>, Error> {
+        Ok(self.storage.keys().cloned().collect())
+    }
+
+    fn delete_file(&mut self, file_path: &str) -> Result<(), Error> {
+        self.storage.remove(file_path).ok_or(am_err!(
+            InternalError,
+            "storage not found for the given file path {:?}",
+            file_path
+        ))?;
+        Ok(())
+    }
 }
 
 impl PersistentStorage for MockPersistentStorage {}

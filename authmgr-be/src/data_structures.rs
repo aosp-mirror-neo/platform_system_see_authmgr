@@ -17,14 +17,15 @@
 //! Data structures used in AuthMgr Backend
 use crate::{
     am_err,
-    error::{Error, ErrorCode},
+    error::{Error, ErrorCode, PolicyMatchingError},
     traits::RawConnection,
+    try_to_vec,
 };
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use authgraph_core::key::{CertChain, EcVerifyKey, InstanceIdentifier};
+use authgraph_core::key::{CertChain, EcVerifyKey};
 use authmgr_common::{
     signed_connection_request::{Challenge, TransportID},
     DicePolicy, Token,
@@ -44,6 +45,97 @@ pub const MAX_SIZE_AUTH_COMPLETED_PVMS: usize = 6;
 /// Default value for the maximum number of entries in the cache for authorized clients
 /// per connection
 pub const MAX_AUTHORIZED_CLIENTS_PER_CONNECTION: usize = 8;
+
+/// Size of an instance identifier in bytes.
+/// See the documentation of instance id in AuthMgr README at:
+/// hardware/interfaces/security/see/authmgr/aidl/README.md
+pub const INSTANCE_IDENTIFIER_SIZE: usize = 64;
+
+/// Size of an UUID in bytes
+pub const UUID_SIZE: usize = 16;
+
+/// Test VM primary UUID is 07590497-b72d-4434-ab36-51442e130536, as per AuthMgr README at:
+/// hardware/interfaces/security/see/authmgr/aidl/README.md
+pub const TEST_VM_PRIMARY_UUID: [u8; UUID_SIZE] = [
+    0x07, 0x59, 0x04, 0x97, 0xb7, 0x2d, 0x44, 0x34, 0xab, 0x36, 0x51, 0x44, 0x2e, 0x13, 0x05, 0x36,
+];
+
+// A persistent system vm has the first byte of its instance id as: 0x80 0x00 0x00 0x00
+// A persistent vendor vm has the first byte of its instance id as: 0xff 0xff 0xff 0xff
+// To test for a persistent instance, we check whether the most significant bit (MSB) of byte 0 is 1
+const MSB_MASK: u8 = 0b1000_0000;
+
+// Test VM primary UUID is 16 bytes long, starting from the 16th byte of instance-id
+const TEST_VM_PRIMARY_UUID_BEGIN_OFFSET: usize = 16;
+const TEST_VM_PRIMARY_UUID_END_OFFSET_EXCLUSIVE: usize =
+    TEST_VM_PRIMARY_UUID_BEGIN_OFFSET + UUID_SIZE;
+
+// Test VM secondary UUID is 16 bytes long, starting from the 32nd byte of instance-id
+const TEST_VM_SECONDARY_UUID_BEGIN_OFFSET: usize = 32;
+const TEST_VM_SECONDARY_UUID_END_OFFSET_EXCLUSIVE: usize =
+    TEST_VM_SECONDARY_UUID_BEGIN_OFFSET + UUID_SIZE;
+
+/// Type alias for an instance-id passed into step 1 of phase 1
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct InstanceIdentifier(pub [u8; INSTANCE_IDENTIFIER_SIZE]);
+
+impl InstanceIdentifier {
+    /// Try to construct an instance-id from the  given byte slice
+    pub fn try_new(instance_id_data: &[u8]) -> Result<Self, Error> {
+        let instance_id_size = instance_id_data.len();
+        let instance_id: [u8; INSTANCE_IDENTIFIER_SIZE] =
+            instance_id_data.try_into().map_err(|_e| {
+                am_err!(
+                    InvalidInstanceIdentifier,
+                    "instance-id expected size: {:?}, actual size: {:?}",
+                    INSTANCE_IDENTIFIER_SIZE,
+                    instance_id_size
+                )
+            })?;
+        Ok(Self(instance_id))
+    }
+
+    /// Create an instance id for a test vm, given the secondary UUID that uniquely identifies the
+    /// test vm. This method is useful for VTS tests.
+    pub fn new_for_test_vm(secondary_uuid: [u8; UUID_SIZE]) -> Self {
+        let mut test_vm_instance_id = [0u8; INSTANCE_IDENTIFIER_SIZE];
+        // first byte of a system persistent vm is same as the MSB_MASK
+        test_vm_instance_id[0] = MSB_MASK;
+        test_vm_instance_id
+            [TEST_VM_PRIMARY_UUID_BEGIN_OFFSET..TEST_VM_PRIMARY_UUID_END_OFFSET_EXCLUSIVE]
+            .copy_from_slice(TEST_VM_PRIMARY_UUID.as_slice());
+        test_vm_instance_id
+            [TEST_VM_SECONDARY_UUID_BEGIN_OFFSET..TEST_VM_SECONDARY_UUID_END_OFFSET_EXCLUSIVE]
+            .copy_from_slice(secondary_uuid.as_slice());
+        Self(test_vm_instance_id)
+    }
+
+    /// A helper function to distinguish persistent instances from non-persistent instances, via the
+    /// instance identifier.
+    /// Secure storage invariant: we cannot allow a non-persistent pVM connect to secure storage
+    /// without the secure storage knowing that it is a non-persistent client. Therefore, the
+    /// AuthMgr BE should know whether a given pVM is persistent or not.
+    /// See the instance-id schema defined in AuthMgr README at:
+    /// hardware/interfaces/security/see/authmgr/aidl/README.md
+    pub fn is_persistent(&self) -> bool {
+        // Most significant bit of byte 0 is set to 1 in persistent VMs' instance ids.
+        // TODO: uncomment the following once b/417493963#comment31 is addressed
+        //self.0[0] & MSB_MASK != 0
+        true
+    }
+
+    /// A helper function to identify whether a VM instance is a test VM, given its instance-id.
+    /// See instance-id schema at hardware/interfaces/security/see/authmgr/aidl/README.md
+    pub fn is_test(&self) -> bool {
+        self.0[TEST_VM_PRIMARY_UUID_BEGIN_OFFSET..TEST_VM_PRIMARY_UUID_END_OFFSET_EXCLUSIVE]
+            == TEST_VM_PRIMARY_UUID
+    }
+
+    /// Get the instance id data as a vector of bytes
+    pub fn try_to_vec(&self) -> Result<Vec<u8>, PolicyMatchingError> {
+        Ok(try_to_vec(&self.0)?)
+    }
+}
 
 /// Type alias for a client identifier of 64 bytes. This identifier is assigned by the pVM.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -680,6 +772,8 @@ pub struct ClientMetaData {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::traits::{Storage, WriteMode};
+    use alloc::string::String;
     use alloc::sync::Arc;
     use alloc::vec;
     use authgraph_core_test::{
@@ -726,5 +820,119 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(ErrorCode::InternalError, result.as_ref().unwrap_err().0);
         assert!(result.unwrap_err().1.contains(PersistentContext::ERROR_MSG_INSUFFICIENT_DATA));
+    }
+
+    // Security VM Instance ID parameters
+    // "vm_partition": "system",
+    // "is_vm_persistent": true,
+    // "vm_primary_uuid": "6c07e3dc-79e1-45a3-936d-b5d73a978f41"
+    const SECURITY_VM_INSTANCE_ID: InstanceIdentifier = InstanceIdentifier([
+        0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x6c, 0x07, 0xe3, 0xdc, 0x79, 0xe1, 0x45, 0xa3, 0x93, 0x6d, 0xb5, 0xd7, 0x3a, 0x97,
+        0x8f, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+    ]);
+
+    // A random persistent vendor VM
+    const PERSISTENT_VENDOR_VM_INSTANCE_ID: InstanceIdentifier = InstanceIdentifier([
+        0xff, 0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x3c, 0x07, 0xe3, 0xdc, 0x79, 0xe1, 0x45, 0xa3, 0x93, 0x6d, 0xb5, 0xd7, 0x3a, 0x97,
+        0x8f, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+    ]);
+
+    //  A random non-persistent system VM
+    const NON_PERSISTENT_VM_INSTANCE_ID: InstanceIdentifier = InstanceIdentifier([
+        0x77, 0x77, 0x77, 0x77, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x5c, 0x07, 0xe3, 0xdc, 0x79, 0xe1, 0x45, 0xa3, 0x93, 0x6d, 0xb5, 0xd7, 0x3a, 0x97,
+        0x8f, 0x41, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+    ]);
+
+    // Persistent test vm
+    // Parameters from packages/modules/Virtualization/guest/trusty/test_vm/
+    // test_vm_instance_id_config.json:
+    // "vm_partition": "system",
+    // "is_vm_persistent": true,
+    // "vm_primary_uuid": "07590497-b72d-4434-ab36-51442e130536",
+    // "vm_secondary_uuid": "0bea1ffc-b036-4d3a-8268-a5a041ade6b8"
+    const TEST_VM_INSTANCE_ID: InstanceIdentifier = InstanceIdentifier([
+        0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x07, 0x59, 0x04, 0x97, 0xb7, 0x2d, 0x44, 0x34, 0xab, 0x36, 0x51, 0x44, 0x2e, 0x13,
+        0x05, 0x36, 0x0b, 0xea, 0x1f, 0xfc, 0xb0, 0x36, 0x4d, 0x3a, 0x82, 0x68, 0xa5, 0xa0, 0x41,
+        0xad, 0xe6, 0xb8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+    ]);
+
+    // TODO: fix the test once b/417493963#comment31 is addressed
+    #[test]
+    fn test_for_persistent_instance_id() {
+        assert!(SECURITY_VM_INSTANCE_ID.is_persistent());
+        assert!(PERSISTENT_VENDOR_VM_INSTANCE_ID.is_persistent());
+        assert!(NON_PERSISTENT_VM_INSTANCE_ID.is_persistent());
+    }
+
+    #[test]
+    fn test_for_test_instance_id() {
+        assert!(TEST_VM_INSTANCE_ID.is_test());
+        assert!(!SECURITY_VM_INSTANCE_ID.is_test());
+    }
+
+    #[test]
+    fn test_instance_id_for_test_vm() {
+        // UUID = df261d53-3789-424b-8feb-7b80abae009c
+        let secondary_uuid: [u8; 16] = [
+            0xdf, 0x26, 0x1d, 0x53, 0x37, 0x89, 0x42, 0x4b, 0x8f, 0xeb, 0x7b, 0x80, 0xab, 0xae,
+            0x00, 0x9c,
+        ];
+        let instance_id = InstanceIdentifier::new_for_test_vm(secondary_uuid);
+        assert!(instance_id.is_test());
+        assert!(instance_id.is_persistent());
+    }
+
+    #[test]
+    fn test_context_file_name_with_instance_id_roundtrip() {
+        struct MockDevice;
+        impl Storage for MockDevice {
+            fn read(&self, _file_path: &str) -> Result<Option<Vec<u8>>, Error> {
+                unimplemented!()
+            }
+            fn write(
+                &mut self,
+                _file_path: &str,
+                _data: &[u8],
+                _write_mode: WriteMode,
+            ) -> Result<(), Error> {
+                unimplemented!()
+            }
+            fn list_file_names(&self) -> Result<Vec<String>, Error> {
+                unimplemented!()
+            }
+            fn delete_file(&mut self, _file_path: &str) -> Result<(), Error> {
+                unimplemented!()
+            }
+        }
+        let dev = MockDevice;
+        let test_vm_context_file_name =
+            dev.build_storage_file_path_for_instance(&TEST_VM_INSTANCE_ID);
+        let extracted_test_vm_instance_id = dev
+            .extract_instance_id_from_context_file_name(&test_vm_context_file_name)
+            .expect("error in extracting instance id from test vm context file name");
+        assert_eq!(extracted_test_vm_instance_id, TEST_VM_INSTANCE_ID);
+
+        // client UUID = c0b68b1d-2dce-42ea-8398-ccc4b614b43c
+        let client_id = vec![
+            0xc0, 0xb6, 0x8b, 0x1d, 0x2d, 0xce, 0x42, 0xea, 0x83, 0x98, 0xcc, 0xc4, 0xb6, 0x14,
+            0xb4, 0x3c,
+        ];
+        let test_vm_client_context_file_name =
+            dev.build_storage_file_path_for_client(&TEST_VM_INSTANCE_ID, 12, &ClientId(client_id));
+        let extracted_instance_id = dev
+            .extract_instance_id_from_context_file_name(&test_vm_client_context_file_name)
+            .expect("error in extracting instance id from test vm client context file name");
+        assert_eq!(extracted_instance_id, TEST_VM_INSTANCE_ID);
     }
 }

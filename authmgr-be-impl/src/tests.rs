@@ -108,7 +108,7 @@ fn test_auth_mgr_protocol_single_pvm() {
     pvm.add_client(wv_ta);
 
     let mut allowed_persistent_instances = HashMap::<InstanceIdentifier, Policy>::new();
-    allowed_persistent_instances.insert(pvm_instance_id.clone(), dice_policy);
+    allowed_persistent_instances.insert(pvm_instance_id, dice_policy);
 
     let device = AuthMgrBeDevice::new(AUTHMGR_BE_TRANSPORT_ID, allowed_persistent_instances);
 
