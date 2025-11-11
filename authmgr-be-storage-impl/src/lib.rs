@@ -71,22 +71,12 @@ impl Storage for SecureStorage {
     }
 
     fn write(&mut self, file_path: &str, data: &[u8], write_mode: WriteMode) -> Result<(), Error> {
-        let file = match write_mode {
-            WriteMode::CreateExclusive => open_new_file(&self.session, file_path)?,
-            WriteMode::OverwriteExisting => {
-                match open_existing_file(&self.session, file_path, &OPEN_EXISTING_FOR_OVERWRITE)? {
-                    Some(file) => file,
-                    None => {
-                        return Err(am_err!(
-                            InternalError,
-                            "file does not exist in the given path: {:?}",
-                            file_path
-                        ))
-                    }
-                }
-            }
+        let options = match write_mode {
+            WriteMode::CreateExclusive => &OPEN_NEW_FOR_WRITE_ONLY,
+            WriteMode::OverwriteExisting => &OPEN_EXISTING_FOR_OVERWRITE,
         };
-        file.write_all_at(0, data)
+        self.session
+            .write_file(file_path, data, options)
             .map_err(|e| am_err!(InternalError, "error in writing to the file: {:?}", e))?;
         self.session.commit().map_err(|e| am_err!(InternalError, "error in committing: {:?}", e))
     }
@@ -127,14 +117,4 @@ fn open_existing_file<'a>(
         },
         |file| Ok(Some(file)),
     )
-}
-
-fn open_new_file<'a>(session: &'a Session, file_path: &str) -> Result<File<'a>, Error> {
-    session.open_file(file_path, &OPEN_NEW_FOR_WRITE_ONLY).map_err(|e| {
-        if let StorageError::FileAlreadyExists(s) = e {
-            am_err!(InternalError, "file already exists in the given path: {:?}", s)
-        } else {
-            am_err!(InternalError, "error in opening the file: {:?}", e)
-        }
-    })
 }
