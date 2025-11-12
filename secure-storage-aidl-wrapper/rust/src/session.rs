@@ -85,6 +85,14 @@ impl Session {
         self.inner.deleteFile(path).map_err(|status| file_op_error_to_storage_error(status, path))
     }
 
+    /// Writes the entire buffer to a file at the given path with the specified open options.
+    pub fn write_file(&self, path: &str, buffer: &[u8], options: &OpenOptions) -> Result<()> {
+        self.is_dirty.store(true, Ordering::Relaxed);
+        let file = self.open_file(path, options)?;
+        file.write_all_at(0, buffer)?;
+        Ok(())
+    }
+
     /// Lists all filenames in the given directory path.
     ///
     /// This method handles the pagination of the underlying `IDir` interface,
