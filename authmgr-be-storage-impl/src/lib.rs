@@ -26,12 +26,9 @@ use authmgr_be::{
     traits::{PersistentStorage, Storage, WriteMode},
 };
 use secure_storage_aidl_wrapper::{
-    error::Error as StorageError,
-    file::{
-        File, OPEN_EXISTING_FOR_OVERWRITE, OPEN_EXISTING_FOR_READ_ONLY, OPEN_NEW_FOR_WRITE_ONLY,
-    },
+    file::{OPEN_EXISTING_FOR_OVERWRITE, OPEN_NEW_FOR_WRITE_ONLY},
     session::{Session, TAMPER_PROOF_EARLY_ACCESS_PERSISTENT_FS},
-    OpenOptions, Strong,
+    Strong,
 };
 pub use secure_storage_aidl_wrapper::{
     session::DEFAULT_SECURE_STORAGE_SERVICE_NAME, ISecureStorage,
@@ -59,15 +56,9 @@ impl SecureStorage {
 
 impl Storage for SecureStorage {
     fn read(&self, file_path: &str) -> Result<Option<Vec<u8>>, Error> {
-        match open_existing_file(&self.session, file_path, &OPEN_EXISTING_FOR_READ_ONLY)? {
-            Some(file) => {
-                let content = file
-                    .read_all()
-                    .map_err(|e| am_err!(InternalError, "error in reading the file: {:?}", e))?;
-                Ok(Some(content))
-            }
-            None => Ok(None),
-        }
+        self.session
+            .read_file(file_path)
+            .map_err(|e| am_err!(InternalError, "error in reading the file: {:?}", e))
     }
 
     fn write(&mut self, file_path: &str, data: &[u8], write_mode: WriteMode) -> Result<(), Error> {
@@ -96,25 +87,3 @@ impl Storage for SecureStorage {
 }
 
 impl PersistentStorage for SecureStorage {}
-
-fn open_existing_file<'a>(
-    session: &'a Session,
-    file_path: &'a str,
-    open_options: &OpenOptions,
-) -> Result<Option<File<'a>>, Error> {
-    session.open_file(file_path, open_options).map_or_else(
-        |e| {
-            if let StorageError::FileNotFound(_) = e {
-                Ok(None)
-            } else {
-                Err(am_err!(
-                    InternalError,
-                    "error in opening the file: {:?}, due to: {:?}",
-                    file_path,
-                    e
-                ))
-            }
-        },
-        |file| Ok(Some(file)),
-    )
-}
