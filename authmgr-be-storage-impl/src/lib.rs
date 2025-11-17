@@ -26,12 +26,9 @@ use authmgr_be::{
     traits::{PersistentStorage, Storage, WriteMode},
 };
 use secure_storage_aidl_wrapper::{
-    error::Error as StorageError,
-    file::{
-        File, OPEN_EXISTING_FOR_OVERWRITE, OPEN_EXISTING_FOR_READ_ONLY, OPEN_NEW_FOR_WRITE_ONLY,
-    },
+    file::{OPEN_EXISTING_FOR_OVERWRITE, OPEN_NEW_FOR_WRITE_ONLY},
     session::{Session, TAMPER_PROOF_EARLY_ACCESS_PERSISTENT_FS},
-    OpenOptions, Strong,
+    Strong,
 };
 pub use secure_storage_aidl_wrapper::{
     session::DEFAULT_SECURE_STORAGE_SERVICE_NAME, ISecureStorage,
@@ -59,34 +56,18 @@ impl SecureStorage {
 
 impl Storage for SecureStorage {
     fn read(&self, file_path: &str) -> Result<Option<Vec<u8>>, Error> {
-        match open_existing_file(&self.session, file_path, &OPEN_EXISTING_FOR_READ_ONLY)? {
-            Some(file) => {
-                let content = file
-                    .read_all()
-                    .map_err(|e| am_err!(InternalError, "error in reading the file: {:?}", e))?;
-                Ok(Some(content))
-            }
-            None => Ok(None),
-        }
+        self.session
+            .read_file(file_path)
+            .map_err(|e| am_err!(InternalError, "error in reading the file: {:?}", e))
     }
 
     fn write(&mut self, file_path: &str, data: &[u8], write_mode: WriteMode) -> Result<(), Error> {
-        let file = match write_mode {
-            WriteMode::CreateExclusive => open_new_file(&self.session, file_path)?,
-            WriteMode::OverwriteExisting => {
-                match open_existing_file(&self.session, file_path, &OPEN_EXISTING_FOR_OVERWRITE)? {
-                    Some(file) => file,
-                    None => {
-                        return Err(am_err!(
-                            InternalError,
-                            "file does not exist in the given path: {:?}",
-                            file_path
-                        ))
-                    }
-                }
-            }
+        let options = match write_mode {
+            WriteMode::CreateExclusive => &OPEN_NEW_FOR_WRITE_ONLY,
+            WriteMode::OverwriteExisting => &OPEN_EXISTING_FOR_OVERWRITE,
         };
-        file.write_all_at(0, data)
+        self.session
+            .write_file(file_path, data, options)
             .map_err(|e| am_err!(InternalError, "error in writing to the file: {:?}", e))?;
         self.session.commit().map_err(|e| am_err!(InternalError, "error in committing: {:?}", e))
     }
@@ -106,35 +87,3 @@ impl Storage for SecureStorage {
 }
 
 impl PersistentStorage for SecureStorage {}
-
-fn open_existing_file<'a>(
-    session: &'a Session,
-    file_path: &'a str,
-    open_options: &OpenOptions,
-) -> Result<Option<File<'a>>, Error> {
-    session.open_file(file_path, open_options).map_or_else(
-        |e| {
-            if let StorageError::FileNotFound(_) = e {
-                Ok(None)
-            } else {
-                Err(am_err!(
-                    InternalError,
-                    "error in opening the file: {:?}, due to: {:?}",
-                    file_path,
-                    e
-                ))
-            }
-        },
-        |file| Ok(Some(file)),
-    )
-}
-
-fn open_new_file<'a>(session: &'a Session, file_path: &str) -> Result<File<'a>, Error> {
-    session.open_file(file_path, &OPEN_NEW_FOR_WRITE_ONLY).map_err(|e| {
-        if let StorageError::FileAlreadyExists(s) = e {
-            am_err!(InternalError, "file already exists in the given path: {:?}", s)
-        } else {
-            am_err!(InternalError, "error in opening the file: {:?}", e)
-        }
-    })
-}

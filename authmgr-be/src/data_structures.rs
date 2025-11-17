@@ -119,9 +119,7 @@ impl InstanceIdentifier {
     /// hardware/interfaces/security/see/authmgr/aidl/README.md
     pub fn is_persistent(&self) -> bool {
         // Most significant bit of byte 0 is set to 1 in persistent VMs' instance ids.
-        // TODO: uncomment the following once b/417493963#comment31 is addressed
-        //self.0[0] & MSB_MASK != 0
-        true
+        self.0[0] & MSB_MASK != 0
     }
 
     /// A helper function to identify whether a VM instance is a test VM, given its instance-id.
@@ -867,12 +865,11 @@ mod tests {
         0x00, 0x00, 0x00, 0x00,
     ]);
 
-    // TODO: fix the test once b/417493963#comment31 is addressed
     #[test]
     fn test_for_persistent_instance_id() {
         assert!(SECURITY_VM_INSTANCE_ID.is_persistent());
         assert!(PERSISTENT_VENDOR_VM_INSTANCE_ID.is_persistent());
-        assert!(NON_PERSISTENT_VM_INSTANCE_ID.is_persistent());
+        assert!(!NON_PERSISTENT_VM_INSTANCE_ID.is_persistent());
     }
 
     #[test]
