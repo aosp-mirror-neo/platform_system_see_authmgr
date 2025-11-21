@@ -17,10 +17,19 @@
 //! Entry point to the wrapper library around the secure storage AIDL interface
 #![no_std]
 extern crate alloc;
-pub mod error;
-pub mod file;
-pub mod session;
+mod error;
+mod file;
+mod session;
+
 pub use android_hardware_security_see_storage::aidl::android::hardware::security::see::storage::{
     ISecureStorage::ISecureStorage, OpenOptions::OpenOptions,
 };
 pub use android_hardware_security_see_storage::binder::Strong;
+pub use error::{Error, Result};
+pub use file::{
+    File, OPEN_EXISTING_FOR_OVERWRITE, OPEN_EXISTING_FOR_READ_ONLY, OPEN_NEW_FOR_WRITE_ONLY,
+    OPEN_READ_WRITE,
+};
+pub use session::{
+    Session, DEFAULT_SECURE_STORAGE_SERVICE_NAME, TAMPER_PROOF_EARLY_ACCESS_PERSISTENT_FS,
+};
