@@ -22,7 +22,8 @@ mod file;
 mod session;
 
 pub use android_hardware_security_see_storage::aidl::android::hardware::security::see::storage::{
-    ISecureStorage::ISecureStorage, OpenOptions::OpenOptions,
+    Availability::Availability, Filesystem::Filesystem, ISecureStorage::ISecureStorage,
+    Integrity::Integrity, OpenOptions::OpenOptions,
 };
 pub use android_hardware_security_see_storage::binder::Strong;
 pub use error::{Error, Result};
