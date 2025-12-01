@@ -26,13 +26,11 @@ use authmgr_be::{
     traits::{PersistentStorage, Storage, WriteMode},
 };
 use secure_storage_aidl_wrapper::{
-    file::{OPEN_EXISTING_FOR_OVERWRITE, OPEN_NEW_FOR_WRITE_ONLY},
-    session::{Session, TAMPER_PROOF_EARLY_ACCESS_PERSISTENT_FS},
-    Strong,
+    Session, Strong, OPEN_EXISTING_FOR_OVERWRITE, OPEN_NEW_FOR_WRITE_ONLY,
+    TAMPER_PROOF_EARLY_ACCESS_PERSISTENT_FS,
 };
-pub use secure_storage_aidl_wrapper::{
-    session::DEFAULT_SECURE_STORAGE_SERVICE_NAME, ISecureStorage,
-};
+
+pub use secure_storage_aidl_wrapper::{ISecureStorage, DEFAULT_SECURE_STORAGE_SERVICE_NAME};
 
 /// Encapsulates a session established with the secure storage that is
 /// accessed via the AIDL interface
