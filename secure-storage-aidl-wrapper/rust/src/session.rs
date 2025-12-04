@@ -150,24 +150,31 @@ impl Session {
 
     /// Commit changes
     pub fn commit(&self) -> Result<()> {
-        if self.is_dirty.load(Ordering::Relaxed) {
+        if self.is_dirty.swap(false, Ordering::AcqRel) {
             // TODO(b/433726493): Investigate using `stageChangesForCommitOnAbUpdateComplete` for
-            // commit.
-            // The API allows staging changes during an A/B update, which is safer than a direct
-            // commit.
-            self.inner.commitChanges()?;
-            self.is_dirty.store(false, Ordering::Relaxed);
+            // commit. The API allows staging changes during an A/B update, which is safer than
+            // a direct commit.
+            match self.inner.commitChanges() {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    // CRITICAL: If the commit fails, the session is likely still dirty.
+                    // We must restore the flag to true so a subsequent retry (or drop warning)
+                    // works. We use Release to ensure the restoration is visible.
+                    self.is_dirty.store(true, Ordering::Release);
+                    Err(e.into())
+                }
+            }
         } else {
             debug!("Session is clean, commit skipped.");
+            Ok(())
         }
-        Ok(())
     }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
         // Warn if the session is still marked as dirty when dropped.
-        if self.is_dirty.load(Ordering::Relaxed) {
+        if self.is_dirty.load(Ordering::Acquire) {
             warn!("storage session dropped with uncommitted changes");
         }
     }
