@@ -51,7 +51,7 @@ pub struct Session {
     inner: Strong<dyn IStorageSession>,
     /// Tracks if any write operations (e.g., `write`, `delete_file`)
     /// have been performed during this session. This is thread-safe.
-    pub(crate) is_dirty: AtomicBool,
+    is_dirty: AtomicBool,
 }
 
 impl Session {
@@ -88,15 +88,18 @@ impl Session {
             .openFile(path, options)
             .map_err(|status| file_op_error_to_storage_error(status, path))?;
         if modifies_fs {
-            self.is_dirty.store(true, Ordering::Release);
+            self.mark_dirty();
         }
         Ok(File::new(file, self))
     }
 
     /// Deletes a file.
     pub fn delete_file(&self, path: &str) -> Result<()> {
-        self.is_dirty.store(true, Ordering::Relaxed);
-        self.inner.deleteFile(path).map_err(|status| file_op_error_to_storage_error(status, path))
+        self.inner
+            .deleteFile(path)
+            .map_err(|status| file_op_error_to_storage_error(status, path))?;
+        self.mark_dirty();
+        Ok(())
     }
 
     /// Reads the entire content of a file with the given `path`.
@@ -116,7 +119,6 @@ impl Session {
 
     /// Writes the entire buffer to a file at the given path with the specified open options.
     pub fn write_file(&self, path: &str, buffer: &[u8], options: &OpenOptions) -> Result<()> {
-        self.is_dirty.store(true, Ordering::Relaxed);
         let file = self.open_file(path, options)?;
         file.write_all_at(0, buffer)?;
         Ok(())
@@ -160,7 +162,7 @@ impl Session {
                     // CRITICAL: If the commit fails, the session is likely still dirty.
                     // We must restore the flag to true so a subsequent retry (or drop warning)
                     // works. We use Release to ensure the restoration is visible.
-                    self.is_dirty.store(true, Ordering::Release);
+                    self.mark_dirty();
                     Err(e.into())
                 }
             }
@@ -168,6 +170,11 @@ impl Session {
             debug!("Session is clean, commit skipped.");
             Ok(())
         }
+    }
+
+    /// Marks the current session as dirty.
+    pub(crate) fn mark_dirty(&self) {
+        self.is_dirty.store(true, Ordering::Release);
     }
 }
 
