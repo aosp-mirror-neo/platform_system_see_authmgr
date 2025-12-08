@@ -20,8 +20,9 @@ use crate::file::{File, OPEN_EXISTING_FOR_READ_ONLY};
 use alloc::string::String;
 use alloc::vec::Vec;
 use android_hardware_security_see_storage::aidl::android::hardware::security::see::storage::{
-    Availability::Availability, Filesystem::Filesystem, ISecureStorage::ISecureStorage,
-    IStorageSession::IStorageSession, Integrity::Integrity, OpenOptions::OpenOptions,
+    Availability::Availability, CreationMode::CreationMode, Filesystem::Filesystem,
+    ISecureStorage::ISecureStorage, IStorageSession::IStorageSession, Integrity::Integrity,
+    OpenOptions::OpenOptions,
 };
 use android_hardware_security_see_storage::binder::Strong;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -30,6 +31,13 @@ use log::{debug, trace, warn};
 /// Secure storage service name
 pub const DEFAULT_SECURE_STORAGE_SERVICE_NAME: &str =
     "android.hardware.security.see.storage.ISecureStorage/default";
+
+/// A tamper-detecting filesystem.
+pub const TAMPER_DETECT_EARLY_ACCESS_PERSISTENT_FS: Filesystem = Filesystem {
+    integrity: Integrity::TAMPER_DETECT,
+    availability: Availability::BEFORE_USERDATA,
+    persistent: true,
+};
 
 /// A tamper-proof filesystem.
 pub const TAMPER_PROOF_EARLY_ACCESS_PERSISTENT_FS: Filesystem = Filesystem {
@@ -72,10 +80,16 @@ impl Session {
     /// The returned `File` is tied to the lifetime of this session, ensuring it
     /// cannot outlive the transaction it belongs to.
     pub fn open_file<'a>(&'a self, path: &str, options: &OpenOptions) -> Result<File<'a>> {
+        // If the file is being created or truncated, the filesystem state changes immediately.
+        // We must mark the session as dirty so these changes are committed.
+        let modifies_fs = options.truncateOnOpen || options.createMode != CreationMode::NO_CREATE;
         let file = self
             .inner
             .openFile(path, options)
             .map_err(|status| file_op_error_to_storage_error(status, path))?;
+        if modifies_fs {
+            self.is_dirty.store(true, Ordering::Release);
+        }
         Ok(File::new(file, self))
     }
 

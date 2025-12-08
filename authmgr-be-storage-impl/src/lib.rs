@@ -26,8 +26,8 @@ use authmgr_be::{
     traits::{PersistentStorage, Storage, WriteMode},
 };
 use secure_storage_aidl_wrapper::{
-    Session, Strong, OPEN_EXISTING_FOR_OVERWRITE, OPEN_NEW_FOR_WRITE_ONLY,
-    TAMPER_PROOF_EARLY_ACCESS_PERSISTENT_FS,
+    Availability, Filesystem, Integrity, Session, Strong, OPEN_EXISTING_FOR_OVERWRITE,
+    OPEN_NEW_FOR_WRITE_ONLY,
 };
 
 pub use secure_storage_aidl_wrapper::{ISecureStorage, DEFAULT_SECURE_STORAGE_SERVICE_NAME};
@@ -38,16 +38,21 @@ pub struct SecureStorage {
     session: Session,
 }
 
+const EARLY_ACCESS_PERSISTENT_FS: Filesystem = Filesystem {
+    integrity: Integrity::TAMPER_DETECT,
+    availability: Availability::BEFORE_USERDATA,
+    persistent: true,
+};
+
 impl SecureStorage {
     /// Construct a `SecureStorage`, given a binder object for ISecureStorage, which contains
     /// a session to the securee storage. The binder object is passed into the constructor
     /// because obtaining the binder (RPC) object can be platform specific.
     pub fn new(storage_binder: &Strong<dyn ISecureStorage>) -> Result<Self, Error> {
         Ok(Self {
-            session: Session::new(storage_binder, &TAMPER_PROOF_EARLY_ACCESS_PERSISTENT_FS)
-                .map_err(|e| {
-                    am_err!(InternalError, "error in creating a secure storage session: {:?}", e)
-                })?,
+            session: Session::new(storage_binder, &EARLY_ACCESS_PERSISTENT_FS).map_err(|e| {
+                am_err!(InternalError, "error in creating a secure storage session: {:?}", e)
+            })?,
         })
     }
 }
