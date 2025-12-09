@@ -32,13 +32,6 @@ use log::{debug, trace, warn};
 pub const DEFAULT_SECURE_STORAGE_SERVICE_NAME: &str =
     "android.hardware.security.see.storage.ISecureStorage/default";
 
-/// A tamper-detecting filesystem.
-pub const TAMPER_DETECT_EARLY_ACCESS_PERSISTENT_FS: Filesystem = Filesystem {
-    integrity: Integrity::TAMPER_DETECT,
-    availability: Availability::BEFORE_USERDATA,
-    persistent: true,
-};
-
 /// A tamper-proof filesystem.
 pub const TAMPER_PROOF_EARLY_ACCESS_PERSISTENT_FS: Filesystem = Filesystem {
     integrity: Integrity::TAMPER_PROOF_AT_REST,
