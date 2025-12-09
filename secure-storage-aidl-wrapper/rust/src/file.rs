@@ -22,7 +22,6 @@ use android_hardware_security_see_storage::aidl::android::hardware::security::se
     CreationMode::CreationMode, FileMode::FileMode, IFile::IFile, OpenOptions::OpenOptions,
 };
 use android_hardware_security_see_storage::binder::Strong;
-use core::sync::atomic::Ordering;
 
 /// Options for opening a file for writing and reading, creating it if needed.
 pub const OPEN_READ_WRITE: OpenOptions = OpenOptions {
@@ -80,8 +79,8 @@ impl File<'_> {
 
     /// Sets the size of the file. This may truncate or expand the file.
     pub fn set_size(&self, new_size: usize) -> Result<()> {
-        self.session.is_dirty.store(true, Ordering::Relaxed);
         self.inner.setSize(new_size.try_into()?)?;
+        self.session.mark_dirty();
         Ok(())
     }
 
@@ -131,8 +130,9 @@ impl File<'_> {
     ///
     /// Returns the number of bytes written.
     pub fn write_at(&self, offset: usize, buffer: &[u8]) -> Result<usize> {
-        self.session.is_dirty.store(true, Ordering::Relaxed);
-        Ok(self.inner.write(offset.try_into()?, buffer)?.try_into()?)
+        let size_written = self.inner.write(offset.try_into()?, buffer)?;
+        self.session.mark_dirty();
+        Ok(size_written.try_into()?)
     }
 
     /// Writes the entire buffer to the file at a given `offset`.
@@ -140,9 +140,8 @@ impl File<'_> {
     /// This method ensures that all bytes from the buffer are written. It returns an
     /// error if the number of bytes written does not match the buffer's length.
     pub fn write_all_at(&self, offset: usize, buffer: &[u8]) -> Result<()> {
-        self.session.is_dirty.store(true, Ordering::Relaxed);
         let size_written = self.write_at(offset, buffer)?;
-
+        self.session.mark_dirty();
         if size_written == buffer.len() {
             Ok(())
         } else {

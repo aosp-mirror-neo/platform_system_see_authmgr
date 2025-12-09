@@ -51,7 +51,7 @@ pub struct Session {
     inner: Strong<dyn IStorageSession>,
     /// Tracks if any write operations (e.g., `write`, `delete_file`)
     /// have been performed during this session. This is thread-safe.
-    pub(crate) is_dirty: AtomicBool,
+    is_dirty: AtomicBool,
 }
 
 impl Session {
@@ -88,15 +88,18 @@ impl Session {
             .openFile(path, options)
             .map_err(|status| file_op_error_to_storage_error(status, path))?;
         if modifies_fs {
-            self.is_dirty.store(true, Ordering::Release);
+            self.mark_dirty();
         }
         Ok(File::new(file, self))
     }
 
     /// Deletes a file.
     pub fn delete_file(&self, path: &str) -> Result<()> {
-        self.is_dirty.store(true, Ordering::Relaxed);
-        self.inner.deleteFile(path).map_err(|status| file_op_error_to_storage_error(status, path))
+        self.inner
+            .deleteFile(path)
+            .map_err(|status| file_op_error_to_storage_error(status, path))?;
+        self.mark_dirty();
+        Ok(())
     }
 
     /// Reads the entire content of a file with the given `path`.
@@ -116,7 +119,6 @@ impl Session {
 
     /// Writes the entire buffer to a file at the given path with the specified open options.
     pub fn write_file(&self, path: &str, buffer: &[u8], options: &OpenOptions) -> Result<()> {
-        self.is_dirty.store(true, Ordering::Relaxed);
         let file = self.open_file(path, options)?;
         file.write_all_at(0, buffer)?;
         Ok(())
@@ -150,24 +152,36 @@ impl Session {
 
     /// Commit changes
     pub fn commit(&self) -> Result<()> {
-        if self.is_dirty.load(Ordering::Relaxed) {
+        if self.is_dirty.swap(false, Ordering::AcqRel) {
             // TODO(b/433726493): Investigate using `stageChangesForCommitOnAbUpdateComplete` for
-            // commit.
-            // The API allows staging changes during an A/B update, which is safer than a direct
-            // commit.
-            self.inner.commitChanges()?;
-            self.is_dirty.store(false, Ordering::Relaxed);
+            // commit. The API allows staging changes during an A/B update, which is safer than
+            // a direct commit.
+            match self.inner.commitChanges() {
+                Ok(_) => Ok(()),
+                Err(e) => {
+                    // CRITICAL: If the commit fails, the session is likely still dirty.
+                    // We must restore the flag to true so a subsequent retry (or drop warning)
+                    // works. We use Release to ensure the restoration is visible.
+                    self.mark_dirty();
+                    Err(e.into())
+                }
+            }
         } else {
             debug!("Session is clean, commit skipped.");
+            Ok(())
         }
-        Ok(())
+    }
+
+    /// Marks the current session as dirty.
+    pub(crate) fn mark_dirty(&self) {
+        self.is_dirty.store(true, Ordering::Release);
     }
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
         // Warn if the session is still marked as dirty when dropped.
-        if self.is_dirty.load(Ordering::Relaxed) {
+        if self.is_dirty.load(Ordering::Acquire) {
             warn!("storage session dropped with uncommitted changes");
         }
     }
