@@ -20,9 +20,8 @@ use crate::file::{File, OPEN_EXISTING_FOR_READ_ONLY};
 use alloc::string::String;
 use alloc::vec::Vec;
 use android_hardware_security_see_storage::aidl::android::hardware::security::see::storage::{
-    Availability::Availability, CreationMode::CreationMode, Filesystem::Filesystem,
-    ISecureStorage::ISecureStorage, IStorageSession::IStorageSession, Integrity::Integrity,
-    OpenOptions::OpenOptions,
+    CreationMode::CreationMode, Filesystem::Filesystem, ISecureStorage::ISecureStorage,
+    IStorageSession::IStorageSession, OpenOptions::OpenOptions,
 };
 use android_hardware_security_see_storage::binder::Strong;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -31,13 +30,6 @@ use log::{debug, trace, warn};
 /// Secure storage service name
 pub const DEFAULT_SECURE_STORAGE_SERVICE_NAME: &str =
     "android.hardware.security.see.storage.ISecureStorage/default";
-
-/// A tamper-proof filesystem.
-pub const TAMPER_PROOF_EARLY_ACCESS_PERSISTENT_FS: Filesystem = Filesystem {
-    integrity: Integrity::TAMPER_PROOF_AT_REST,
-    availability: Availability::BEFORE_USERDATA,
-    persistent: true,
-};
 
 /// Encapsulate a secure storage session
 pub struct Session {
