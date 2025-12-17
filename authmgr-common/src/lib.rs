@@ -199,7 +199,7 @@ mod tests {
         let result1 = match_dice_chain_with_policy(&cert_chain_1, &policy_1);
         assert!(result1.unwrap());
         // Create (child) DICE cert entry for DICE chain 1
-        let leaf_cert_bytes_1 = create_dice_leaf_cert(cdi_values_1, "keymint", 1);
+        let leaf_cert_bytes_1 = create_dice_leaf_cert(&cdi_values_1, "keymint", 1);
         let leaf_cert_1 =
             DiceChainEntry::from_slice(&leaf_cert_bytes_1).expect("failed to decode leaf cert 1");
         // Create a constraints spec for client 1
@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(result_21, Ok(false));
 
         // Create (child) DICE cert entry for DICE chain 1
-        let leaf_cert_bytes_1 = create_dice_leaf_cert(cdi_values_1, "keymint", 1);
+        let leaf_cert_bytes_1 = create_dice_leaf_cert(&cdi_values_1, "keymint", 1);
         let leaf_cert_1 =
             DiceChainEntry::from_slice(&leaf_cert_bytes_1).expect("failed to decode leaf cert 1");
         // Create a constraints spec for client 1
@@ -313,7 +313,7 @@ mod tests {
         assert_eq!(result_1a, Ok(true));
 
         // Create (child) DICE cert entry for DICE chain 2
-        let leaf_cert_bytes_2 = create_dice_leaf_cert(cdi_values_2, "widevine", 1);
+        let leaf_cert_bytes_2 = create_dice_leaf_cert(&cdi_values_2, "widevine", 1);
         let leaf_cert_2 =
             DiceChainEntry::from_slice(&leaf_cert_bytes_2).expect("failed to decode leaf cert 2");
         // Create constraints spec for client 2

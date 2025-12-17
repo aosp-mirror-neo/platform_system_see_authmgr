@@ -19,7 +19,7 @@ use crate::mock_storage::MockPersistentStorage;
 use crate::AuthMgrBeDevice;
 use authgraph_core::key::{CertChain, DiceChainEntry, InstanceIdentifier, Policy};
 use authgraph_core_test::{
-    create_dice_cert_chain_for_guest_os, create_dice_leaf_cert, CdiValues, SAMPLE_INSTANCE_HASH,
+    create_dice_cert_chain_for_guest_os, create_dice_leaf_cert, SAMPLE_INSTANCE_HASH,
     TEST_OS_COMPONENT_NAME,
 };
 use authmgr_be::authorization::AuthMgrBE;
@@ -67,11 +67,7 @@ fn test_auth_mgr_protocol_single_pvm() {
         transport_id,
     );
 
-    let leaf_cert_bytes_km = create_dice_leaf_cert(
-        CdiValues { cdi_attest: cdi_values.cdi_attest, cdi_seal: cdi_values.cdi_seal },
-        "keymint",
-        1,
-    );
+    let leaf_cert_bytes_km = create_dice_leaf_cert(&cdi_values, "keymint", 1);
     let dice_leaf_km =
         DiceChainEntry::from_slice(&leaf_cert_bytes_km).expect("error in decoding leaf cert");
     let client_constraint_spec_km = get_constraint_spec_for_static_trusty_ta();
@@ -89,7 +85,7 @@ fn test_auth_mgr_protocol_single_pvm() {
     );
     pvm.add_client(km_ta);
 
-    let leaf_cert_bytes_wv = create_dice_leaf_cert(cdi_values, "widevine", 1);
+    let leaf_cert_bytes_wv = create_dice_leaf_cert(&cdi_values, "widevine", 1);
     let dice_leaf_wv =
         DiceChainEntry::from_slice(&leaf_cert_bytes_wv).expect("error in decoding leaf cert");
     let client_constraint_spec_wv = get_constraint_spec_for_static_trusty_ta();
