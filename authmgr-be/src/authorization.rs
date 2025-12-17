@@ -681,7 +681,7 @@ impl AuthMgrBE {
                 "the client's DICE leaf certificate doesn't match the given DICE policy"
             ));
         }
-        let policy_updated = client_info.match_policy(given_policy);
+        let policy_updated = !client_info.has_same_policy(given_policy);
         if policy_updated {
             if !match_dice_cert_with_policy(given_dice_cert, client_info.get_policy()?)? {
                 return Err(am_err!(

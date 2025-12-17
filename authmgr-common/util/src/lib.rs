@@ -109,10 +109,18 @@ pub fn get_constraints_spec_for_trusty_vm(guest_os_component_name: &str) -> Vec<
 /// Note that this is a helper method only. The implementors of AuthMgr-FE should build a constraint
 /// spec according to the client configurations.
 pub fn get_constraint_spec_for_static_trusty_ta() -> Vec<ConstraintSpec> {
-    vec![ConstraintSpec::new(
-        ConstraintType::ExactMatch,
-        vec![CONFIG_DESC, COMPONENT_NAME],
-        MissingAction::Fail,
-        TargetEntry::All,
-    )]
+    vec![
+        ConstraintSpec::new(
+            ConstraintType::ExactMatch,
+            vec![CONFIG_DESC, COMPONENT_NAME],
+            MissingAction::Fail,
+            TargetEntry::All,
+        ),
+        ConstraintSpec::new(
+            ConstraintType::GreaterOrEqual,
+            vec![CONFIG_DESC, SECURITY_VERSION],
+            MissingAction::Fail,
+            TargetEntry::All,
+        ),
+    ]
 }

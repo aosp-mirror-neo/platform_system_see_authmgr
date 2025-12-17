@@ -740,8 +740,8 @@ pub enum ClientInfoAtRollbackProtection<'a> {
     FromPersistentStorage(&'a mut PersistentClientContext),
 }
 impl<'a> ClientInfoAtRollbackProtection<'a> {
-    /// Match with a given policy
-    pub fn match_policy(&'a self, given_policy: &DicePolicy) -> bool {
+    /// Check if the client info has the same policy as the given policy
+    pub fn has_same_policy(&'a self, given_policy: &DicePolicy) -> bool {
         match self {
             Self::FromCache(authorized_client) => *authorized_client.policy == *given_policy,
             Self::FromPersistentStorage(ctx) => *ctx.dice_policy == *given_policy,
