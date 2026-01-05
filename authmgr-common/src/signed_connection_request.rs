@@ -277,7 +277,8 @@ mod tests {
     #[test]
     fn test_sign_verify_connection_request() {
         // Create a cert chain with a private key
-        let (sign_key, _, cert_chain_bytes) = create_dice_cert_chain_for_guest_os(None, 1);
+        let (sign_key, _, cert_chain_bytes) =
+            create_dice_cert_chain_for_guest_os(None, 1, true /*normal mode*/);
         // Retrieve the public signing key from the cert chain
         let cert_chain =
             CertChain::from_slice(&cert_chain_bytes).expect("failed to decode the dice chain");
