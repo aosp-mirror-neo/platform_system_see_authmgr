@@ -578,8 +578,14 @@ impl AuthMgrBE {
                 "the DICE chain doesn't match the given DICE policy."
             ));
         }
-        if *instance_ctx.dice_policy != **given_policy {
-            if !match_dice_chain_with_policy(dice_chain, &instance_ctx.dice_policy)? {
+        let overridden_policy =
+            self.device.override_stored_policy_for_instance(instance_id, &instance_ctx.dice_policy);
+        let policy_for_validation: &DicePolicy = match &overridden_policy {
+            Some(v) => v,
+            None => &instance_ctx.dice_policy,
+        };
+        if *policy_for_validation != **given_policy {
+            if !match_dice_chain_with_policy(dice_chain, policy_for_validation)? {
                 return Err(am_err!(
                     DicePolicyMatchingFailed,
                     "the DICE chain doesn't match the stored DICE policy."
@@ -681,9 +687,17 @@ impl AuthMgrBE {
                 "the client's DICE leaf certificate doesn't match the given DICE policy"
             ));
         }
-        let policy_updated = !client_info.has_same_policy(given_policy);
-        if policy_updated {
-            if !match_dice_cert_with_policy(given_dice_cert, client_info.get_policy()?)? {
+        let overridden_policy = self.device.override_stored_policy_for_client(
+            instance_id,
+            client_id,
+            client_info.get_policy()?,
+        );
+        let policy_for_validation: &DicePolicy = match &overridden_policy {
+            Some(v) => v,
+            None => client_info.get_policy()?,
+        };
+        if *policy_for_validation != **given_policy {
+            if !match_dice_cert_with_policy(given_dice_cert, policy_for_validation)? {
                 return Err(am_err!(
                     DicePolicyMatchingFailed,
                     "the client's DICE leaf certificate doesn't match the stored DICE policy"

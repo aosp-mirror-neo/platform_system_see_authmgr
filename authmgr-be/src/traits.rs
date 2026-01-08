@@ -22,7 +22,7 @@ use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use authgraph_core::key::CertChain;
-use authmgr_common::signed_connection_request::TransportID;
+use authmgr_common::{signed_connection_request::TransportID, DicePolicy};
 
 /// Trait defining device specific functionality
 pub trait Device: Send {
@@ -110,6 +110,57 @@ pub trait Device: Send {
     /// The default implementation returns false.
     fn test_vm_survives_reboot(&self, _instance_id: &InstanceIdentifier) -> bool {
         false
+    }
+
+    /// Allows OEMs to override the stored policy of a pVM instance.
+    ///
+    /// This method is called during the instance authentication flow, after fetching the
+    /// currently stored `DicePolicy` for a given `InstanceIdentifier` but before comparing it
+    /// against the latest policy derived from the instance's presented DICE certificate chain.
+    ///
+    /// # WARNING
+    /// Modifying the stored policy incorrectly can lead to severe security regressions, potentially
+    /// allowing unauthorized instances to be authenticated. This method should ONLY be used
+    /// in very specific scenarios, such as recovering from a compromise where a policy update
+    /// is absolutely necessary.
+    ///
+    /// # Motivating Example: Key Rotation
+    /// One scenario where overriding the policy is necessary is during key rotation. The DICE
+    /// policy can include an “authority hash” with an “exact match” constraint. The authority hash
+    /// is a hash of the public key used to verify the authenticity of a software image. If the
+    /// signing key is compromised, it must be rotated. This rotation changes the authority hash in
+    /// new DICE certificates. Without this extension point, the new DICE chain would fail to match
+    /// the previously stored policy (which contains the old authority hash), preventing the
+    /// instance from booting. This method allows OEMs to provide an updated `DicePolicy` to be used
+    /// for the current authentication attempt, effectively overriding the stored policy for
+    /// this instance.
+    fn override_stored_policy_for_instance(
+        &self,
+        _instance_id: &InstanceIdentifier,
+        _stored_policy: &DicePolicy,
+    ) -> Option<DicePolicy> {
+        // Return None in the default implementation.
+        None
+    }
+
+    /// The goal of this method is the same as that of the `overwite_stored_policy_for_instance`
+    /// method, but this focuses on the DICE policy of a client in the pvm instance.
+    ///
+    /// This method is called during the client authorization flow, after fetching the
+    /// currently stored `DicePolicy` for a given `InstanceIdentifier` and a `ClientId` but before
+    /// comparing it against the latest policy derived from the client's presented DICE certificate.
+    ///
+    /// Note that implementing this method may not be needed if the client DICE certificate is not
+    /// impacted by the changes rolled out for a recovery from compromise incident, even if
+    /// override_stored_policy_for_instance method is implemented.
+    fn override_stored_policy_for_client(
+        &self,
+        _instance_id: &InstanceIdentifier,
+        _client_id: &ClientId,
+        _stored_policy: &DicePolicy,
+    ) -> Option<DicePolicy> {
+        // Return None in the default implementation.
+        None
     }
 }
 
