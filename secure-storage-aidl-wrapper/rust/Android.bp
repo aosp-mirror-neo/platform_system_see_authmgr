@@ -24,6 +24,7 @@ rust_library {
         "android.hardware.security.see.storage-V1-rust",
         "liblog_rust",
         "libthiserror",
+        "libcfg_if",
     ],
     no_std: {
         enabled: true,

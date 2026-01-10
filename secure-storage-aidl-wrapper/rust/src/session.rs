@@ -24,6 +24,7 @@ use android_hardware_security_see_storage::aidl::android::hardware::security::se
     IStorageSession::IStorageSession, OpenOptions::OpenOptions,
 };
 use android_hardware_security_see_storage::binder::Strong;
+use cfg_if::cfg_if;
 use core::sync::atomic::{AtomicBool, Ordering};
 use log::{debug, trace, warn};
 
@@ -138,10 +139,18 @@ impl Session {
     /// Commit changes
     pub fn commit(&self) -> Result<()> {
         if self.is_dirty.swap(false, Ordering::AcqRel) {
-            // TODO(b/433726493): Investigate using `stageChangesForCommitOnAbUpdateComplete` for
-            // commit. The API allows staging changes during an A/B update, which is safer than
-            // a direct commit.
-            match self.inner.commitChanges() {
+            // TODO: Change to `let commit = cfg_if! { ... };` once attributes
+            // are allowed on expressions:
+            // https://github.com/rust-lang/rust/issues/15701
+            cfg_if! {
+                if #[cfg(feature = "secure_storage_stage_during_ab_update")] {
+                    let commit_result = self.inner.stageChangesForCommitOnAbUpdateComplete();
+                } else {
+                    let commit_result = self.inner.commitChanges();
+                }
+            };
+
+            match commit_result {
                 Ok(_) => Ok(()),
                 Err(e) => {
                     // CRITICAL: If the commit fails, the session is likely still dirty.
