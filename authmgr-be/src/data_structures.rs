@@ -782,8 +782,11 @@ mod tests {
     #[test]
     fn test_persistent_context_serialization_roundtrip() {
         // Create DICE chain for a pvm instance
-        let (_sign_key, _cdi_values, cert_chain_bytes) =
-            create_dice_cert_chain_for_guest_os(Some(SAMPLE_INSTANCE_HASH), 1);
+        let (_sign_key, _cdi_values, cert_chain_bytes) = create_dice_cert_chain_for_guest_os(
+            Some(SAMPLE_INSTANCE_HASH),
+            1,
+            true, /*normal mode*/
+        );
         // Create constraints spec
         let constraint_spec = get_constraints_spec_for_trusty_vm(TEST_OS_COMPONENT_NAME);
         // Create policy given constraints spec and DICE chain

@@ -40,8 +40,11 @@ const SECURE_STORAGE_SERVICE_NAME: &str = "secure_storage";
 fn test_auth_mgr_protocol_single_pvm() {
     // Create a single persistent pvm with two clients, with the corresponding entries in the
     // AuthMgrBeDevice
-    let (sign_key, cdi_values, dice_cert) =
-        create_dice_cert_chain_for_guest_os(Some(SAMPLE_INSTANCE_HASH), 1);
+    let (sign_key, cdi_values, dice_cert) = create_dice_cert_chain_for_guest_os(
+        Some(SAMPLE_INSTANCE_HASH),
+        1,
+        true, /*normal mode*/
+    );
     let cert_chain = CertChain::from_slice(&dice_cert).expect("error in decoding the dice cert");
     let pvm_instance_id = cert_chain
         .extract_instance_identifier_in_guest_os_entry()

@@ -183,8 +183,11 @@ mod tests {
     #[test]
     fn test_dice_policy_extend() {
         // Create DICE chain 1 for a pvm instance
-        let (_sign_key_1, cdi_values_1, cert_chain_bytes_1) =
-            create_dice_cert_chain_for_guest_os(Some(SAMPLE_INSTANCE_HASH), 1);
+        let (_sign_key_1, cdi_values_1, cert_chain_bytes_1) = create_dice_cert_chain_for_guest_os(
+            Some(SAMPLE_INSTANCE_HASH),
+            1,
+            true, /*normal mode*/
+        );
         let cert_chain_1 =
             CertChain::from_slice(&cert_chain_bytes_1).expect("failed to decode cert_chain 1");
         // Create constraints spec 1
@@ -251,8 +254,11 @@ mod tests {
     #[test]
     fn simulate_authmgr_dice_verification() {
         // Create DICE chain 1 for a pvm instance
-        let (_sign_key_1, cdi_values_1, cert_chain_bytes_1) =
-            create_dice_cert_chain_for_guest_os(Some(SAMPLE_INSTANCE_HASH), 1);
+        let (_sign_key_1, cdi_values_1, cert_chain_bytes_1) = create_dice_cert_chain_for_guest_os(
+            Some(SAMPLE_INSTANCE_HASH),
+            1,
+            true, /*normal mode*/
+        );
         let cert_chain_1 =
             CertChain::from_slice(&cert_chain_bytes_1).expect("failed to decode cert_chain 1");
         // Create constraints spec 1
@@ -277,7 +283,7 @@ mod tests {
             0xa4, 0x2a, 0x7d, 0x7e, 0xf5, 0x8e, 0xf5, 0x3f,
         ];
         let (_sign_key_2, cdi_values_2, cert_chain_bytes_2) =
-            create_dice_cert_chain_for_guest_os(Some(instance_hash), 2);
+            create_dice_cert_chain_for_guest_os(Some(instance_hash), 2, true /*normal mode*/);
         let cert_chain_2 =
             CertChain::from_slice(&cert_chain_bytes_2).expect("failed to decode cert_chain 2");
         // Create (different) constraints spec 2
@@ -369,8 +375,11 @@ mod tests {
         // Test rollback protection via DICE policy:
         // Create a DICE chain 3 with the same instance hash as DICE chain 1, but with a higher
         // security version.
-        let (_sign_key_3, _cdi_values_3, cert_chain_bytes_3) =
-            create_dice_cert_chain_for_guest_os(Some(SAMPLE_INSTANCE_HASH), 3);
+        let (_sign_key_3, _cdi_values_3, cert_chain_bytes_3) = create_dice_cert_chain_for_guest_os(
+            Some(SAMPLE_INSTANCE_HASH),
+            3,
+            true, /*normal mode*/
+        );
         let cert_chain_3 =
             CertChain::from_slice(&cert_chain_bytes_3).expect("failed to decode cert_chain 3");
         // Create policy 3 given constraint spec 1 and DICE chain 3

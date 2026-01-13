@@ -150,15 +150,13 @@ impl AuthMgrBE {
         let cert_chain = CertChain::from_slice(cert_chain)
             .map_err(|_e| am_err!(InvalidDiceCertChain, "failed to decode the DICE cert chain."))?;
 
-        // Check if an instance id is provided in the optional parameter. If it is not present,
-        // extract the instance id from the DICE chain.
+        // Check if an instance id is provided in the optional parameter.
         let instance_id: InstanceIdentifier = match ext_instance_id {
             Some(instance_id) => InstanceIdentifier::try_new(instance_id)?,
             None => {
                 return Err(am_err!(
                     InvalidInstanceIdentifier,
-                    "Instance identifier is neither present in
-                        the argument, nor in the DICE cert chain."
+                    "Instance identifier is not provided."
                 ))
             }
         };
