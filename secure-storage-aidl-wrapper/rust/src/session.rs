@@ -143,7 +143,7 @@ impl Session {
             // are allowed on expressions:
             // https://github.com/rust-lang/rust/issues/15701
             cfg_if! {
-                if #[cfg(feature = "secure_storage_stage_during_ab_update")] {
+                if #[cfg(feature = "storage_support_stage_during_udc")] {
                     let commit_result = self.inner.stageChangesForCommitOnAbUpdateComplete();
                 } else {
                     let commit_result = self.inner.commitChanges();

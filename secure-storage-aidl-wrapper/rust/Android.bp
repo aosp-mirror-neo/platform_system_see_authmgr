@@ -26,6 +26,14 @@ rust_library {
         "libthiserror",
         "libcfg_if",
     ],
+    // If storage supports staging changes during (possible) user data
+    // checkpointing, (like during an A/B Update) we won't be able to commit
+    // while there's an active checkpoint or before vold knows whether it needs
+    // to checkpoint. Stage changes instead so that writes will succeed, but not
+    // be committed until checkpointing completes.
+    //
+    // features: ["storage_support_stage_during_udc"],
+    features: [],
     no_std: {
         enabled: true,
     },
