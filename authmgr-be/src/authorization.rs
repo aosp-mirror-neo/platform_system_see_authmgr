@@ -21,9 +21,10 @@ use crate::{
         AuthStartedPvm, AuthStartedPvms, AuthenticatedConnectionInfo, AuthenticatedPvms,
         AuthorizedClient, AuthorizedClientFullDiceArtifacts, AuthorizedClientsGlobalList, ClientId,
         ClientInfoAtRollbackProtection, ClientMetaData, ConnectionAuthState, DiceArtifacts,
-        InstanceIdentifier, MemoryLimits, PendingClientAuthorization, PendingClientAuthorizations,
-        PersistentClientContext, PersistentInstanceContext, PolicyMatchingResult,
-        VERSION_PERSISTENT_CLIENT_CONTEXT, VERSION_PERSISTENT_INSTANCE_CONTEXT,
+        DiceChainModeForPvm, InstanceIdentifier, MemoryLimits, PendingClientAuthorization,
+        PendingClientAuthorizations, PersistentClientContext, PersistentInstanceContext,
+        PolicyMatchingResult, VERSION_PERSISTENT_CLIENT_CONTEXT,
+        VERSION_PERSISTENT_INSTANCE_CONTEXT,
     },
     error::{Error, ErrorCode, PolicyMatchingError},
     traits::{Device, PersistentStorage, RawConnection, RpcConnection, WriteMode},
@@ -149,6 +150,11 @@ impl AuthMgrBE {
         // Decode the DICE certificate chain
         let cert_chain = CertChain::from_slice(cert_chain)
             .map_err(|_e| am_err!(InvalidDiceCertChain, "failed to decode the DICE cert chain."))?;
+        let dice_chain_mode = if cert_chain.are_all_certs_mode_normal()? {
+            DiceChainModeForPvm::Normal
+        } else {
+            DiceChainModeForPvm::NotNormal
+        };
 
         // Check if an instance id is provided in the optional parameter.
         let instance_id: InstanceIdentifier = match ext_instance_id {
@@ -165,10 +171,32 @@ impl AuthMgrBE {
         // We check with the instance id and transport id separately, and not with the combination
         // of the two, because the latter allows the same pVM to be spawned twice (resulting in two
         // different transport ids and the same instance id) and connected, which we want to avoid.
-        if self.auth_completed_pvms.has_instance_id(&instance_id) {
+        // For the checks based on the instance id, we use the tuple (instance id, dice chain mode)
+        // for checking initAuthentication attempts for already authenticated pVMs.
+        // Apart from that, if a pVM instance with a given instance id and dice chain mode = Normal
+        // is already authenticated, we reject any attempts by an instance with the same instance id
+        // and dice chain mode = NotNormal.
+        if self
+            .auth_completed_pvms
+            .has_instance_id_and_dice_chain_mode(&instance_id, dice_chain_mode)
+        {
             return Err(am_err!(
                 InstanceAlreadyAuthenticated,
-                "duplicated authentication attempt with the instance id: {:?}!",
+                "duplicated authentication attempt with the instance id: {:?},
+                 dice chain mode: {:?}!",
+                instance_id,
+                dice_chain_mode
+            ));
+        }
+        if dice_chain_mode == DiceChainModeForPvm::NotNormal
+            && self
+                .auth_completed_pvms
+                .has_instance_id_and_dice_chain_mode(&instance_id, DiceChainModeForPvm::Normal)
+        {
+            return Err(am_err!(
+                InstanceAlreadyAuthenticated,
+                "an instance is already authenticated with the same instance id: {:?} and
+                  dice chain mode = Normal!",
                 instance_id
             ));
         }
@@ -196,6 +224,7 @@ impl AuthMgrBE {
         self.auth_started_pvms.insert(AuthStartedPvm {
             transport_id,
             instance_id: Arc::new(instance_id),
+            dice_chain_mode,
             challenge,
             cert_chain: Arc::new(cert_chain),
         });
@@ -239,12 +268,6 @@ impl AuthMgrBE {
                 AuthenticationNotStarted,
                 "An authentication started pVM was not found for the given transport id"
             ))?;
-        if self.auth_completed_pvms.has_instance_id(&auth_started_entry.instance_id) {
-            return Err(am_err!(
-                InstanceAlreadyAuthenticated,
-                "duplicated authentication attempt!"
-            ));
-        }
 
         let given_dice_policy = Arc::new(DicePolicy::from_slice(dice_policy).map_err(|e| {
             am_err!(InvalidDicePolicy, "failed to decode the DICE policy: {:?}", e)

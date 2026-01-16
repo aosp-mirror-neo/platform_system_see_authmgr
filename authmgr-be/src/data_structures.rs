@@ -318,6 +318,17 @@ impl PersistentContext {
     }
 }
 
+/// Enum with two variants indicating whether or not all the certificates of the DICE chain of a pVM
+/// have mode=Normal or at least one has a mode value that is different from Nomal.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiceChainModeForPvm {
+    /// At least one certificate of the DICE chain has a mode value that is different from Normal
+    NotNormal = 0,
+    /// All the certificates of the DICE chain have mode=Normal
+    Normal = 1,
+}
+
 /// Encapsulates information about a pVM instance which has completed step 1 of phase 1 of the
 /// AuthMgr protocol  (i.e. `init_authentication`), but not step 2 (i.e. `complete_authentication`).
 #[derive(Clone, PartialEq)]
@@ -326,6 +337,8 @@ pub struct AuthStartedPvm {
     pub transport_id: TransportID,
     /// Instance id of the pvm
     pub instance_id: Arc<InstanceIdentifier>,
+    /// Dice chain mode
+    pub dice_chain_mode: DiceChainModeForPvm,
     /// Challenge issued by the AuthMgr BE to this pvm
     pub challenge: Challenge,
     /// Certificate chain of the pvm
@@ -339,9 +352,11 @@ impl AuthStartedPvm {
         auth_started_pvms: &mut AuthStartedPvms,
         authenticated_pvms: &mut AuthenticatedPvms,
     ) -> Result<(), Error> {
-        // Remove any other entries in `AuthStartedPvms` with the authenticated instance id, to
-        // enforce the Trust On First Use (TOFU) principle.
-        auth_started_pvms.remove_via_instance_id(&self.instance_id);
+        // Remove any other entries in `AuthStartedPvms` based on the authenticated instance id and
+        // the DICE chain mode to enforce the Trust On First Use (TOFU) principle and prioritizing
+        // instances with dice chain mode=Normal.
+        auth_started_pvms
+            .remove_via_instance_id_and_dice_chain_mode(&self.instance_id, self.dice_chain_mode);
         authenticated_pvms.insert(self)
     }
 }
@@ -395,10 +410,30 @@ impl AuthStartedPvms {
         self.auth_started_pvms.retain(|entry| entry.transport_id != transport_id);
     }
 
-    /// Remove all entries with a given instance id - this is used to remove all entries with
-    /// an authenticated instance id.
-    pub fn remove_via_instance_id(&mut self, instance_id: &InstanceIdentifier) {
-        self.auth_started_pvms.retain(|entry| &*entry.instance_id != instance_id);
+    /// Remove all entries given an instance id and dice chain mode - this is used to remove all
+    /// entries with a given tuple of (instance id, dice chain mode) of an authenticated pVM.
+    /// Furthermore, if the dice chain mode = Normal, this removes any entry with the given
+    /// instance id and dice chain mode = NotNormal.
+    pub fn remove_via_instance_id_and_dice_chain_mode(
+        &mut self,
+        instance_id: &InstanceIdentifier,
+        dice_chain_mode: DiceChainModeForPvm,
+    ) {
+        self.auth_started_pvms.retain(|entry| {
+            if &*entry.instance_id != instance_id {
+                // This is not our instance id, keep it
+                return true;
+            }
+
+            if dice_chain_mode == DiceChainModeForPvm::Normal {
+                // If we're getting rid of a VM with mode Normal, it's NotNormal
+                // counterpart also needs to go.
+                false
+            } else {
+                // Get rid of the VM only if its mode matches the one we're looking for.
+                dice_chain_mode != entry.dice_chain_mode
+            }
+        });
     }
 }
 
@@ -408,6 +443,8 @@ impl AuthStartedPvms {
 pub struct AuthenticatedPvm {
     /// Instance id of the pvm
     pub instance_id: Arc<InstanceIdentifier>,
+    /// Dice chain mode
+    pub dice_chain_mode: DiceChainModeForPvm,
     /// Transport id of the pvm
     pub transport_id: TransportID,
 }
@@ -438,16 +475,23 @@ impl AuthenticatedPvms {
         }
         let authenticated_pvm = AuthenticatedPvm {
             instance_id: Arc::clone(&auth_started_pvm.instance_id),
+            dice_chain_mode: auth_started_pvm.dice_chain_mode,
             transport_id: auth_started_pvm.transport_id,
         };
         self.authenticated_pvms.push(authenticated_pvm);
         Ok(())
     }
 
-    /// Check if a pvm with a given instance id already exists in the list - this is used to prevent
-    /// duplicated authentication attempts
-    pub fn has_instance_id(&self, instance_id: &InstanceIdentifier) -> bool {
-        self.authenticated_pvms.iter().any(|entry| &*entry.instance_id == instance_id)
+    /// Check if a pvm with a given (instance id, dice chain mode) tuple already exists in the list.
+    /// This is used to prevent initAuthentication attempts for already authenticated instances.
+    pub fn has_instance_id_and_dice_chain_mode(
+        &self,
+        instance_id: &InstanceIdentifier,
+        dice_chain_mode: DiceChainModeForPvm,
+    ) -> bool {
+        self.authenticated_pvms.iter().any(|entry| {
+            &*entry.instance_id == instance_id && entry.dice_chain_mode == dice_chain_mode
+        })
     }
 
     /// Check if a pvm with a given transport id already exists in the list - this is used to
