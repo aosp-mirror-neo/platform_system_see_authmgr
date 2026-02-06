@@ -329,6 +329,37 @@ pub enum DiceChainModeForPvm {
     Normal = 1,
 }
 
+/// Enum with two variants indicating whether the instance-context of a pVM is stored in the area
+/// (i.e. storage file path) allocated for the given instance-id with dice-chain-mode = Normal or
+/// dice-chain-mode = NotNormal.
+/// We need a separate enum that is different from `DiceChainModeForPvm` enum to represent this
+/// because a pVM with dice-chain-mode = NotNormal may read from the instance-context stored in
+/// the area allocated for the same instance-id with dice-chain-mode = Normal, if the dice policy
+/// allows it (i.e. DICE policy does not contain constraints on dice chain mode).
+/// However, an instance with dice-chain-mode = NotNormal, is not allowed to write to such
+/// instance-context stored in the area allocated for the instance-id with dice-chain-mode = Normal.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StorageModeForPvm {
+    /// Instance-context of a pVM is stored in the area allocated for the instance-id with
+    /// dice-chain-mode = NotNormal.
+    NotNormal = 0,
+    /// Instance-context of a pVM is stored in the area allocated for the instance-id with
+    /// dice-chain-mode = Normal.
+    Normal = 1,
+}
+
+impl TryFrom<u8> for StorageModeForPvm {
+    type Error = Error;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(StorageModeForPvm::NotNormal),
+            1 => Ok(StorageModeForPvm::Normal),
+            _ => Err(am_err!(InternalError, "invalid value for StorageModeForPvm")),
+        }
+    }
+}
+
 /// Encapsulates information about a pVM instance which has completed step 1 of phase 1 of the
 /// AuthMgr protocol  (i.e. `init_authentication`), but not step 2 (i.e. `complete_authentication`).
 #[derive(Clone, PartialEq)]
@@ -811,6 +842,36 @@ pub struct ClientMetaData {
     pub is_persistent: bool,
 }
 
+/// Encapsulates the metadata included in a file name of a context file
+pub struct ContextFileNameMetaData<'a> {
+    /// Prefix indicating the context file type (e.g. instance or client context)
+    pub context_prefix: &'a str,
+    /// Instance identifier
+    pub instance_id: InstanceIdentifier,
+    /// Storage mode
+    pub storage_mode: StorageModeForPvm,
+}
+
+/// Encodes data into the provided buffer. Returns a &str pointing into that buffer.
+pub fn hex_encode_into<'a>(data: &[u8], buffer: &'a mut [u8]) -> Result<&'a str, Error> {
+    // hex needs 2 bytes per input byte
+    if buffer.len() != data.len() * 2 {
+        return Err(am_err!(
+            InternalError,
+            "Buffer has incorrect size, expected: {:?}, got: {:?}",
+            data.len() * 2,
+            buffer.len()
+        ));
+    }
+
+    hex::encode_to_slice(data, buffer)
+        .map_err(|e| am_err!(InternalError, "Hex encode failed: {:?}", e))?;
+
+    // Convert the used portion of the buffer to a &str
+    core::str::from_utf8(&buffer[..data.len() * 2])
+        .map_err(|e| am_err!(InternalError, "UTF-8 conversion failed: {:?}", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -960,23 +1021,31 @@ mod tests {
             }
         }
         let dev = MockDevice;
-        let test_vm_context_file_name =
-            dev.build_storage_file_path_for_instance(&TEST_VM_INSTANCE_ID);
+        let test_vm_context_file_name = dev
+            .build_storage_file_path_for_instance(&TEST_VM_INSTANCE_ID, &StorageModeForPvm::Normal)
+            .expect("error in building instance context file name");
         let extracted_test_vm_instance_id = dev
-            .extract_instance_id_from_context_file_name(&test_vm_context_file_name)
-            .expect("error in extracting instance id from test vm context file name");
+            .extract_metadata_from_context_file_name(&test_vm_context_file_name)
+            .expect("error in extracting instance id from test vm context file name")
+            .instance_id;
         assert_eq!(extracted_test_vm_instance_id, TEST_VM_INSTANCE_ID);
 
-        // client UUID = c0b68b1d-2dce-42ea-8398-ccc4b614b43c
         let client_id = vec![
             0xc0, 0xb6, 0x8b, 0x1d, 0x2d, 0xce, 0x42, 0xea, 0x83, 0x98, 0xcc, 0xc4, 0xb6, 0x14,
             0xb4, 0x3c,
         ];
-        let test_vm_client_context_file_name =
-            dev.build_storage_file_path_for_client(&TEST_VM_INSTANCE_ID, 12, &ClientId(client_id));
+        let test_vm_client_context_file_name = dev
+            .build_storage_file_path_for_client(
+                &TEST_VM_INSTANCE_ID,
+                &StorageModeForPvm::Normal,
+                12,
+                &ClientId(client_id),
+            )
+            .expect("error in building client context file name");
         let extracted_instance_id = dev
-            .extract_instance_id_from_context_file_name(&test_vm_client_context_file_name)
-            .expect("error in extracting instance id from test vm client context file name");
+            .extract_metadata_from_context_file_name(&test_vm_client_context_file_name)
+            .expect("error in extracting instance id from test vm client context file name")
+            .instance_id;
         assert_eq!(extracted_instance_id, TEST_VM_INSTANCE_ID);
     }
 }

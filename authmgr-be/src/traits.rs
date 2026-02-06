@@ -16,13 +16,20 @@
 
 //! Traits representing crypto abstractions and device specific functionality
 use crate::am_err;
-use crate::data_structures::{ClientId, ConnectionAuthState, InstanceIdentifier};
+use crate::data_structures::{
+    hex_encode_into, ClientId, ConnectionAuthState, ContextFileNameMetaData, InstanceIdentifier,
+    StorageModeForPvm, INSTANCE_IDENTIFIER_SIZE, UUID_SIZE,
+};
 use crate::error::{Error, ErrorCode};
 use alloc::boxed::Box;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 use authgraph_core::key::CertChain;
 use authmgr_common::{signed_connection_request::TransportID, DicePolicy};
+use core::fmt::Write;
+
+const INSTANCE_ID_HEX_ENCODED_SIZE: usize = INSTANCE_IDENTIFIER_SIZE * 2;
+const STORAGE_MODE_HEX_ENCODED_SIZE: usize = 2;
 
 /// Trait defining device specific functionality
 pub trait Device: Send {
@@ -82,7 +89,7 @@ pub trait Device: Send {
                 continue;
             }
             let instance_id =
-                persistent_storage.extract_instance_id_from_context_file_name(&file_name)?;
+                persistent_storage.extract_metadata_from_context_file_name(&file_name)?.instance_id;
             if instance_id.is_test() {
                 if !self.is_factory_provisioning_allowed()? {
                     // delete if the TEE is not in factory provisioning stage
@@ -96,6 +103,53 @@ pub trait Device: Send {
             }
         }
         Ok(())
+    }
+
+    /// This is an extension point for cleaning up an instance.
+    /// The default implementation deletes the client contexts belonging to the given instance and
+    /// the instance contexts. Before deleting the client contexts, an extension point for cleaning
+    /// up any resources used by clients is called.
+    fn clean_up_instance(
+        &mut self,
+        persistent_storage: &mut dyn PersistentStorage,
+        instance_id: &InstanceIdentifier,
+        storage_mode: StorageModeForPvm,
+    ) -> Result<(), Error> {
+        let file_names = persistent_storage.list_file_names()?;
+        for file_name in file_names {
+            // Only the files storing instance or client contexts are relevant here.
+            if file_name == persistent_storage.get_global_seq_num_storage_path() {
+                continue;
+            }
+            let context_metadata =
+                persistent_storage.extract_metadata_from_context_file_name(&file_name)?;
+            let client_context_prefix = persistent_storage.get_client_context_storage_prefix();
+            let instance_context_prefix = persistent_storage.get_instance_context_storage_prefix();
+            if context_metadata.instance_id == *instance_id
+                && context_metadata.storage_mode == storage_mode
+            {
+                if context_metadata.context_prefix == client_context_prefix {
+                    self.clean_up_client(persistent_storage, file_name)?;
+                } else if context_metadata.context_prefix == instance_context_prefix {
+                    persistent_storage.delete_file(&file_name)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// This is an extension point for cleaning up a client, given the storage path for the client
+    /// context.
+    /// The default implementation simply deletes the client context file. As per b/477555715, in
+    /// the future, we will add the logic that informs the trusted services that the client has
+    /// connected to, and those which need to be informed upon client deletion,
+    /// to free up resources.
+    fn clean_up_client(
+        &mut self,
+        persistent_storage: &mut dyn PersistentStorage,
+        client_context_file_path: String,
+    ) -> Result<(), Error> {
+        persistent_storage.delete_file(&client_context_file_path)
     }
 
     /// This is a helper method to check whether a given instance id belongs to a test-vm that needs
@@ -267,65 +321,124 @@ pub trait Storage: Send {
     /// 1. The file that stores the global sequence number:
     ///    "GLOBAL_SEQ_NUM"
     /// 2. The file(s) that store the instance contexts:
-    ///    instance_context_file_prefix + storage_path_separator + hex_encoded_instance_id
+    ///    instance_context_file_prefix + storage_path_separator + hex_encoded_instance_id +
+    ///    storage_path_separator + hex_encoded_byte_for_storage_mode
     /// 3. The file(s) that store the client contexts:
     ///    client_context_file_prefix + storage_path_separator + hex_encoded_instance_id +
+    ///    storage_path_separator + hex_encoded_byte_for_storage_mode + storage_path_separator +
     ///    instance_seq_num + storage_path_separator + hex_encoded_client_id
     ///
     /// Helper method with a default implementation to build the file path for an instance context.
-    fn build_storage_file_path_for_instance(&self, instance_id: &InstanceIdentifier) -> String {
-        let mut path = String::from(self.get_instance_context_storage_prefix());
-        path.push_str(self.get_authmgr_be_storage_path_separator());
-        path.push_str(&hex::encode(instance_id.0));
-        path
+    fn build_storage_file_path_for_instance(
+        &self,
+        instance_id: &InstanceIdentifier,
+        storage_mode: &StorageModeForPvm,
+    ) -> Result<String, Error> {
+        let instance_context_prefix = self.get_instance_context_storage_prefix();
+        let instance_context_prefix_len = instance_context_prefix.len();
+        let file_path_separator = self.get_authmgr_be_storage_path_separator();
+        let file_path_separator_len = file_path_separator.len();
+
+        let mut buffer = [0u8; INSTANCE_ID_HEX_ENCODED_SIZE];
+        let hex_encoded_instance_id = hex_encode_into(&instance_id.0, &mut buffer)?;
+        let mut path = String::new();
+        let path_len = instance_context_prefix_len
+            + file_path_separator_len
+            + INSTANCE_ID_HEX_ENCODED_SIZE
+            + file_path_separator_len
+            + STORAGE_MODE_HEX_ENCODED_SIZE;
+        path.try_reserve(path_len)?;
+        path.push_str(instance_context_prefix);
+        path.push_str(file_path_separator);
+        path.push_str(hex_encoded_instance_id);
+        path.push_str(file_path_separator);
+        path.push_str(&hex::encode([*storage_mode as u8]));
+        Ok(path)
     }
 
     /// Helper method with a default implementation to build the file path for a client context.
     fn build_storage_file_path_for_client(
         &self,
         instance_id: &InstanceIdentifier,
+        storage_mode: &StorageModeForPvm,
         vm_seq_num: i64,
         client_id: &ClientId,
-    ) -> String {
-        let mut path = String::from(self.get_client_context_storage_prefix());
-        path.push_str(self.get_authmgr_be_storage_path_separator());
-        path.push_str(&hex::encode(instance_id.0));
-        path.push_str(self.get_authmgr_be_storage_path_separator());
-        path.push_str(vm_seq_num.to_string().as_str());
-        path.push_str(self.get_authmgr_be_storage_path_separator());
-        path.push_str(&hex::encode(&client_id.0));
-        path
+    ) -> Result<String, Error> {
+        let client_context_prefix = self.get_client_context_storage_prefix();
+        let client_context_prefix_len = client_context_prefix.len();
+        let file_path_separator = self.get_authmgr_be_storage_path_separator();
+        let file_path_separator_len = file_path_separator.len();
+
+        let mut buffer_instance_id = [0u8; INSTANCE_ID_HEX_ENCODED_SIZE];
+        let hex_encoded_instance_id = hex_encode_into(&instance_id.0, &mut buffer_instance_id)?;
+
+        const HEX_ENCODED_CLIENT_ID_SIZE: usize = UUID_SIZE * 2;
+        let mut buffer_client_id = [0u8; HEX_ENCODED_CLIENT_ID_SIZE];
+        let hex_encoded_client_id = hex_encode_into(&client_id.0, &mut buffer_client_id)?;
+
+        // Max number of bytes to insert an i64 value in a string
+        const I64_STR_SIZE: usize = 20;
+        let mut path = String::new();
+        let path_len = client_context_prefix_len
+            + file_path_separator_len
+            + INSTANCE_ID_HEX_ENCODED_SIZE
+            + file_path_separator_len
+            + STORAGE_MODE_HEX_ENCODED_SIZE
+            + file_path_separator_len
+            + I64_STR_SIZE
+            + file_path_separator_len
+            + HEX_ENCODED_CLIENT_ID_SIZE;
+        path.try_reserve(path_len)?;
+        path.push_str(client_context_prefix);
+        path.push_str(file_path_separator);
+        path.push_str(hex_encoded_instance_id);
+        path.push_str(file_path_separator);
+        path.push_str(&hex::encode([*storage_mode as u8]));
+        path.push_str(file_path_separator);
+        write!(path, "{}", vm_seq_num).map_err(|e| {
+            am_err!(InternalError, "failed to write vm sequence number to the file path: {:?}", e)
+        })?;
+        path.push_str(file_path_separator);
+        path.push_str(hex_encoded_client_id);
+        Ok(path)
     }
 
-    /// Helper method with a default implementation to extract the instance-id from the given
+    /// Helper method with a default implementation to extract the metadata from the given
     /// instance/client context file name
-    fn extract_instance_id_from_context_file_name(
+    fn extract_metadata_from_context_file_name<'a>(
         &self,
-        file_name: &str,
-    ) -> Result<InstanceIdentifier, Error> {
+        file_name: &'a str,
+    ) -> Result<ContextFileNameMetaData<'a>, Error> {
         let file_path_components: Vec<&str> =
             file_name.split(self.get_authmgr_be_storage_path_separator()).collect();
-        if file_path_components.len() < 2 {
+        if file_path_components.len() < 3 {
             return Err(am_err!(
                 InternalError,
                 "given file name is not in the expected format of an instance context file
                  or a client context file."
             ));
         }
-        let prefix = file_path_components[0];
-        if prefix == self.get_instance_context_storage_prefix()
-            || prefix == self.get_client_context_storage_prefix()
+        let context_prefix = file_path_components[0];
+        if context_prefix != self.get_instance_context_storage_prefix()
+            && context_prefix != self.get_client_context_storage_prefix()
         {
-            let hex_encoded_instance_id = (&file_path_components)[1];
-            let instance_id = hex::decode(hex_encoded_instance_id)
-                .map_err(|e| am_err!(InternalError, "failed to decode instance id: {:?}", e))?;
-            InstanceIdentifier::try_new(&instance_id)
-        } else {
-            Err(am_err!(
+            return Err(am_err!(
                 InternalError,
                 "given file name is neither a instance context file nor a client context file."
-            ))
+            ));
         }
+
+        let hex_encoded_instance_id = (&file_path_components)[1];
+        let instance_id_decoded = hex::decode(hex_encoded_instance_id)
+            .map_err(|e| am_err!(InternalError, "failed to decode instance id: {:?}", e))?;
+        let instance_id = InstanceIdentifier::try_new(&instance_id_decoded)?;
+
+        let hex_encoded_storage_mode = (&file_path_components)[2];
+        let mut buffer = [0u8; 1];
+        hex::decode_to_slice(hex_encoded_storage_mode, &mut buffer)
+            .map_err(|e| am_err!(InternalError, "failed to decode storage mode: {:?}", e))?;
+        let storage_mode = StorageModeForPvm::try_from(buffer[0])?;
+        Ok(ContextFileNameMetaData { context_prefix, instance_id, storage_mode })
     }
 
     /// Helper method to get the separator character used when constructing file paths.

@@ -23,7 +23,7 @@ use crate::{
         ClientInfoAtRollbackProtection, ClientMetaData, ConnectionAuthState, DiceArtifacts,
         DiceChainModeForPvm, InstanceIdentifier, MemoryLimits, PendingClientAuthorization,
         PendingClientAuthorizations, PersistentClientContext, PersistentInstanceContext,
-        PolicyMatchingResult, VERSION_PERSISTENT_CLIENT_CONTEXT,
+        PolicyMatchingResult, StorageModeForPvm, VERSION_PERSISTENT_CLIENT_CONTEXT,
         VERSION_PERSISTENT_INSTANCE_CONTEXT,
     },
     error::{Error, ErrorCode, PolicyMatchingError},
@@ -840,7 +840,8 @@ fn write_persistent_instance_context(
     instance_id: &Arc<InstanceIdentifier>,
     instance_ctx: &PersistentInstanceContext,
 ) -> Result<(), Error> {
-    let path = storage.build_storage_file_path_for_instance(instance_id);
+    let path =
+        storage.build_storage_file_path_for_instance(instance_id, &StorageModeForPvm::Normal)?;
     let ctx_bytes = instance_ctx.to_bytes()?;
     storage.write(&path, ctx_bytes.as_slice(), WriteMode::CreateExclusive)
 }
@@ -850,7 +851,8 @@ fn read_persistent_instance_context(
     storage: &dyn PersistentStorage,
     instance_id: &Arc<InstanceIdentifier>,
 ) -> Result<Option<PersistentInstanceContext>, Error> {
-    let path = storage.build_storage_file_path_for_instance(instance_id);
+    let path =
+        storage.build_storage_file_path_for_instance(instance_id, &StorageModeForPvm::Normal)?;
     storage
         .read(&path)?
         .map_or_else(|| Ok(None), |data| Ok(Some(PersistentInstanceContext::from_bytes(&data)?)))
@@ -863,7 +865,8 @@ fn update_persistent_instance_policy(
     latest_dice_policy: &Arc<DicePolicy>,
     instance_ctx: &mut PersistentInstanceContext,
 ) -> Result<(), Error> {
-    let path = storage.build_storage_file_path_for_instance(instance_id);
+    let path =
+        storage.build_storage_file_path_for_instance(instance_id, &StorageModeForPvm::Normal)?;
     instance_ctx.dice_policy = Arc::clone(latest_dice_policy);
     let ctx_bytes = instance_ctx.to_bytes()?;
     storage.write(&path, ctx_bytes.as_slice(), WriteMode::OverwriteExisting)
@@ -877,8 +880,12 @@ fn write_persistent_client_context(
     client_id: &Arc<ClientId>,
     client_ctx: &PersistentClientContext,
 ) -> Result<(), Error> {
-    let path =
-        storage.build_storage_file_path_for_client(instance_id, instance_seq_number, client_id);
+    let path = storage.build_storage_file_path_for_client(
+        instance_id,
+        &StorageModeForPvm::Normal,
+        instance_seq_number,
+        client_id,
+    )?;
     let ctx_bytes = client_ctx.to_bytes()?;
     storage.write(&path, ctx_bytes.as_slice(), WriteMode::CreateExclusive)
 }
@@ -890,8 +897,12 @@ fn read_persistent_client_context(
     instance_seq_number: i64,
     client_id: &Arc<ClientId>,
 ) -> Result<Option<PersistentClientContext>, Error> {
-    let path =
-        storage.build_storage_file_path_for_client(instance_id, instance_seq_number, client_id);
+    let path = storage.build_storage_file_path_for_client(
+        instance_id,
+        &StorageModeForPvm::Normal,
+        instance_seq_number,
+        client_id,
+    )?;
     storage
         .read(&path)?
         .map_or_else(|| Ok(None), |data| Ok(Some(PersistentClientContext::from_bytes(&data)?)))
@@ -910,9 +921,10 @@ fn update_persistent_client_policy(
         ClientInfoAtRollbackProtection::FromPersistentStorage(client_ctx) => {
             let path = storage.build_storage_file_path_for_client(
                 instance_id,
+                &StorageModeForPvm::Normal,
                 instance_seq_number,
                 client_id,
-            );
+            )?;
             client_ctx.dice_policy = Arc::clone(latest_dice_policy);
             let ctx_bytes = client_ctx.to_bytes()?;
             storage.write(&path, ctx_bytes.as_slice(), WriteMode::OverwriteExisting)
@@ -920,9 +932,10 @@ fn update_persistent_client_policy(
         ClientInfoAtRollbackProtection::FromCache(authorized_client) => {
             let path = storage.build_storage_file_path_for_client(
                 instance_id,
+                &StorageModeForPvm::Normal,
                 instance_seq_number,
                 client_id,
-            );
+            )?;
             let mut client_ctx = read_persistent_client_context(
                 storage,
                 instance_id,

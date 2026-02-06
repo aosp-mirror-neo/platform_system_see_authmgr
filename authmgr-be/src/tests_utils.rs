@@ -24,7 +24,7 @@
 use authgraph_core::key::{CertChain, DiceChainEntry, EcSignKey, Policy};
 use authgraph_core::traits::{EcDsa, Rng};
 use authmgr_be::authorization::AuthMgrBE;
-use authmgr_be::data_structures::{ClientId, ConnectionAuthState, InstanceIdentifier};
+use authmgr_be::data_structures::{ClientId, ConnectionAuthState, InstanceIdentifier, UUID_SIZE};
 use authmgr_be::error::Error;
 use authmgr_be::traits::{RawConnection, RpcConnection};
 use authmgr_common::{
@@ -123,7 +123,7 @@ impl Client {
         services: Vec<String>,
         rng: Box<dyn Rng>,
     ) -> Self {
-        let mut client_id_bytes = [0u8; 32];
+        let mut client_id_bytes = [0u8; UUID_SIZE];
         rng.fill_bytes(&mut client_id_bytes);
         Self {
             dice_leaf,
