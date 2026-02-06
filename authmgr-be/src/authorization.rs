@@ -21,10 +21,10 @@ use crate::{
         AuthStartedPvm, AuthStartedPvms, AuthenticatedConnectionInfo, AuthenticatedPvms,
         AuthorizedClient, AuthorizedClientFullDiceArtifacts, AuthorizedClientsGlobalList, ClientId,
         ClientInfoAtRollbackProtection, ClientMetaData, ConnectionAuthState, DiceArtifacts,
-        DiceChainModeForPvm, InstanceIdentifier, MemoryLimits, PendingClientAuthorization,
-        PendingClientAuthorizations, PersistentClientContext, PersistentInstanceContext,
-        PolicyMatchingResult, StorageModeForPvm, VERSION_PERSISTENT_CLIENT_CONTEXT,
-        VERSION_PERSISTENT_INSTANCE_CONTEXT,
+        DiceChainModeForPvm, InstanceIdentifier, InstanceMetaData, MemoryLimits,
+        PendingClientAuthorization, PendingClientAuthorizations, PersistentClientContext,
+        PersistentInstanceContext, PolicyMatchingResult, StorageModeForPvm,
+        VERSION_PERSISTENT_CLIENT_CONTEXT, VERSION_PERSISTENT_INSTANCE_CONTEXT,
     },
     error::{Error, ErrorCode, PolicyMatchingError},
     traits::{Device, PersistentStorage, RawConnection, RpcConnection, WriteMode},
@@ -83,6 +83,8 @@ impl LatestGlobalSeqNum {
     }
 }
 
+/// TODO: Remove this once the helper methods are used in the follow up CL.
+#[allow(dead_code)]
 impl AuthMgrBE {
     /// Initialize AuthMgr BE
     pub fn new(
@@ -182,7 +184,7 @@ impl AuthMgrBE {
         {
             return Err(am_err!(
                 InstanceAlreadyAuthenticated,
-                "duplicated authentication attempt with the instance id: {:?},
+                "duplicated authentication attempt with the instance id: {:?} and \
                  dice chain mode: {:?}!",
                 instance_id,
                 dice_chain_mode
@@ -195,8 +197,8 @@ impl AuthMgrBE {
         {
             return Err(am_err!(
                 InstanceAlreadyAuthenticated,
-                "an instance is already authenticated with the same instance id: {:?} and
-                  dice chain mode = Normal!",
+                "an instance is already authenticated with the same instance id: {:?} and \
+                 dice chain mode = Normal!",
                 instance_id
             ));
         }
@@ -308,9 +310,13 @@ impl AuthMgrBE {
         };
         // Construct the connection state
         let connection_state = AuthenticatedConnectionInfo::new(
-            Arc::clone(&auth_started_entry.instance_id),
+            InstanceMetaData {
+                instance_id: Arc::clone(&auth_started_entry.instance_id),
+                instance_seq_number,
+                dice_chain_mode: auth_started_entry.dice_chain_mode,
+                storage_mode: StorageModeForPvm::Normal,
+            },
             auth_started_entry.transport_id,
-            instance_seq_number,
             DiceArtifacts {
                 cert_chain: Arc::clone(&auth_started_entry.cert_chain),
                 policy: given_dice_policy,
@@ -319,8 +325,11 @@ impl AuthMgrBE {
             is_persistent,
             self.memory_limits.max_clients_per_pvm,
         )?;
-        auth_started_entry
-            .mark_as_authenticated(&mut self.auth_started_pvms, &mut self.auth_completed_pvms)?;
+        auth_started_entry.mark_as_authenticated(
+            &mut self.auth_started_pvms,
+            &mut self.auth_completed_pvms,
+            instance_seq_number,
+        )?;
         connection.set_current_auth_state(ConnectionAuthState::AuthenticationCompleted(Box::new(
             connection_state,
         )));
@@ -342,8 +351,8 @@ impl AuthMgrBE {
         if !self.auth_completed_pvms.has_transport_id(client_transport_id) {
             return Err(am_err!(
                 InstanceNotAuthenticated,
-                "the transport id is not associated with a pVM that has an
-                  authenticated AuthMgr FE."
+                "the transport id is not associated with a pVM that has an authenticated \
+                 AuthMgr FE."
             ));
         }
 
@@ -368,7 +377,8 @@ impl AuthMgrBE {
             _ => {
                 return Err(am_err!(
                     ConnectionNotAuthenticated,
-                    "phase 2 of the AuthMgr protocol can only be invoked on an authenticated connection."
+                    "phase 2 of the AuthMgr protocol can only be invoked on an authenticated \
+                     connection."
                 ));
             }
         };
@@ -540,13 +550,13 @@ impl AuthMgrBE {
     // enforcing rollback protection for a persistent pvm.
     fn handle_instance_in_persistent_storage(
         &mut self,
-        instance_id: &Arc<InstanceIdentifier>,
+        instance_id: &InstanceIdentifier,
         given_policy: &Arc<DicePolicy>,
         dice_chain: &CertChain,
     ) -> Result<i64, Error> {
         match read_persistent_instance_context(&*self.persistent_storage, instance_id)? {
             Some(mut instance_ctx) => {
-                self.enforce_rollback_protection_for_pvm(
+                self.enforce_rollback_protection_for_instance(
                     instance_id,
                     given_policy,
                     &mut instance_ctx,
@@ -584,10 +594,10 @@ impl AuthMgrBE {
         }
     }
 
-    // A helper function for enforcing rollback protection on a pvm instance.aa
-    fn enforce_rollback_protection_for_pvm(
+    // A helper function for enforcing rollback protection for an instance.
+    fn enforce_rollback_protection_for_instance(
         &mut self,
-        instance_id: &Arc<InstanceIdentifier>,
+        instance_id: &InstanceIdentifier,
         given_policy: &Arc<DicePolicy>,
         instance_ctx: &mut PersistentInstanceContext,
         dice_chain: &CertChain,
@@ -622,6 +632,196 @@ impl AuthMgrBE {
         Ok(())
     }
 
+    // A helper method to read an instance with storage_mode = NotNormal from the storage, and if it
+    // exists, to enforce rollback protection. If the latest DICE chain fails to match
+    // the stored policy, delete the existing instance context and re-create it with a new sequence
+    // number. Create an instance context if it does not exist.
+    // TODO: Introduce storage_mode and dice_chain_mode parameters in the followup CL.
+    fn handle_instance_with_storage_mode_not_normal(
+        &mut self,
+        instance_id: &InstanceIdentifier,
+        given_policy: &Arc<DicePolicy>,
+        dice_chain: &CertChain,
+        normal_mode_instance_exists: bool,
+    ) -> Result<i64, Error> {
+        match read_persistent_instance_context(&*self.persistent_storage, instance_id)? {
+            Some(mut instance_ctx) => {
+                let result = self.enforce_rollback_protection_for_instance(
+                    instance_id,
+                    given_policy,
+                    &mut instance_ctx,
+                    dice_chain,
+                );
+                match result {
+                    Ok(_) => Ok(instance_ctx.sequence_number),
+                    Err(e) if matches!(e.0, ErrorCode::DicePolicyMatchingFailed) => self
+                        .replace_instance_with_storage_mode_not_normal(instance_id, given_policy),
+                    Err(e) => Err(e),
+                }
+            }
+            None => self.create_new_instance_with_storage_mode_not_normal(
+                instance_id,
+                given_policy,
+                dice_chain,
+                normal_mode_instance_exists,
+            ),
+        }
+    }
+
+    // A helper method to allocate a new sequence number and create a new instance context in the
+    // AuthMgr-BE storage.
+    // TODO: Use storage_mode in the follow up CL.
+    fn create_new_instance(
+        &mut self,
+        instance_id: &InstanceIdentifier,
+        given_policy: &Arc<DicePolicy>,
+        _storage_mode: &StorageModeForPvm,
+    ) -> Result<i64, Error> {
+        let sequence_number = self
+            .latest_global_sequence_number
+            .fetch_and_increment(&mut *self.persistent_storage)?;
+        write_persistent_instance_context(
+            &mut *self.persistent_storage,
+            instance_id,
+            &PersistentInstanceContext {
+                version: VERSION_PERSISTENT_INSTANCE_CONTEXT,
+                sequence_number,
+                dice_policy: Arc::clone(given_policy),
+            },
+        )?;
+        Ok(sequence_number)
+    }
+
+    fn create_new_instance_with_storage_mode_normal(
+        &mut self,
+        instance_id: &InstanceIdentifier,
+        given_policy: &Arc<DicePolicy>,
+        dice_chain: &CertChain,
+    ) -> Result<i64, Error> {
+        if !self.device.is_persistent_instance_creation_allowed(instance_id, dice_chain)? {
+            return Err(am_err!(
+                InstanceContextCreationDenied,
+                "the given persistent instance cannot be created"
+            ));
+        }
+        self.create_new_instance(instance_id, given_policy, &StorageModeForPvm::Normal)
+    }
+
+    fn create_new_instance_with_storage_mode_not_normal(
+        &mut self,
+        instance_id: &InstanceIdentifier,
+        given_policy: &Arc<DicePolicy>,
+        dice_chain: &CertChain,
+        normal_mode_instance_exists: bool,
+    ) -> Result<i64, Error> {
+        if !normal_mode_instance_exists
+            && !self.device.is_persistent_instance_creation_allowed(instance_id, dice_chain)?
+        {
+            return Err(am_err!(
+                InstanceContextCreationDenied,
+                "An instance with storage_mode = NotNormal cannot be created unless \
+                 an instance with the same instance_id and storage_mode = Normal has already \
+                 been created or the device is in factory provisioning stage."
+            ));
+        }
+        self.create_new_instance(instance_id, given_policy, &StorageModeForPvm::NotNormal)
+    }
+
+    fn replace_instance_with_storage_mode_not_normal(
+        &mut self,
+        instance_id: &InstanceIdentifier,
+        given_policy: &Arc<DicePolicy>,
+    ) -> Result<i64, Error> {
+        log::info!(
+            "deleting and creating a new instance context for the instance with \
+             instance-id: {:?} and storage_mode = NotNormal as policy matching failed",
+            instance_id
+        );
+        // Delete existing instance context
+        self.delete_instance_with_storage_mode_not_normal(instance_id)?;
+        // Create new instance context
+        self.create_new_instance(instance_id, given_policy, &StorageModeForPvm::NotNormal)
+    }
+
+    // A helper method to allocate a new sequence number and create a new client context in the
+    // AuthMgr-BE storage.
+    // TODO: Use storage_mode in the follow up CL.
+    fn create_new_client(
+        &mut self,
+        instance_id: &InstanceIdentifier,
+        instance_seq_number: i64,
+        _storage_mode: &StorageModeForPvm,
+        client_id: &Arc<ClientId>,
+        given_policy: &Arc<DicePolicy>,
+    ) -> Result<i64, Error> {
+        let sequence_number = self
+            .latest_global_sequence_number
+            .fetch_and_increment(&mut *self.persistent_storage)?;
+        write_persistent_client_context(
+            &mut *self.persistent_storage,
+            instance_id,
+            instance_seq_number,
+            client_id,
+            &PersistentClientContext {
+                version: VERSION_PERSISTENT_CLIENT_CONTEXT,
+                sequence_number,
+                dice_policy: Arc::clone(given_policy),
+            },
+        )?;
+        Ok(sequence_number)
+    }
+
+    fn replace_client_with_storage_mode_not_normal(
+        &mut self,
+        instance_id: &InstanceIdentifier,
+        instance_seq_num: i64,
+        client_id: &Arc<ClientId>,
+        given_policy: &Arc<DicePolicy>,
+    ) -> Result<i64, Error> {
+        let client_ctx_file_path = self.persistent_storage.build_storage_file_path_for_client(
+            instance_id,
+            &StorageModeForPvm::NotNormal,
+            instance_seq_num,
+            client_id,
+        )?;
+        self.device.clean_up_client(&mut *self.persistent_storage, client_ctx_file_path)?;
+        self.create_new_client(
+            instance_id,
+            instance_seq_num,
+            &StorageModeForPvm::NotNormal,
+            client_id,
+            given_policy,
+        )
+    }
+
+    // A helper method to delete an instance with storage_mode = NotNormal
+    fn delete_instance_with_storage_mode_not_normal(
+        &mut self,
+        instance_id: &InstanceIdentifier,
+    ) -> Result<(), Error> {
+        self.device.clean_up_instance(
+            &mut *self.persistent_storage,
+            instance_id,
+            StorageModeForPvm::NotNormal,
+        )
+    }
+
+    // A helper method called before booting an instance with storage_mode = Normal, if an instance
+    // context has been created for an instance with storage_mode = NotNormal for the same instance
+    // id and if that instance is not running right now, in order to delete such instance contexts.
+    fn delete_stale_instance_with_storage_mode_not_normal(
+        &mut self,
+        instance_id: &InstanceIdentifier,
+    ) -> Result<(), Error> {
+        if !self
+            .auth_completed_pvms
+            .has_instance_id_and_dice_chain_mode(instance_id, DiceChainModeForPvm::NotNormal)
+        {
+            return self.delete_instance_with_storage_mode_not_normal(instance_id);
+        }
+        Ok(())
+    }
+
     // A helper method to enforce rollback protection for a client already in the cache.
     fn enforce_rollback_protection_for_client_in_cache(
         &mut self,
@@ -643,7 +843,7 @@ impl AuthMgrBE {
 
     fn handle_client_in_persistent_storage(
         &mut self,
-        instance_id: &Arc<InstanceIdentifier>,
+        instance_id: &InstanceIdentifier,
         instance_seq_number: i64,
         client_id: &Arc<ClientId>,
         given_dice_cert: &DiceChainEntry,
@@ -694,7 +894,7 @@ impl AuthMgrBE {
 
     fn enforce_rollback_protection_for_client(
         &mut self,
-        instance_id: &Arc<InstanceIdentifier>,
+        instance_id: &InstanceIdentifier,
         instance_seq_number: i64,
         client_id: &Arc<ClientId>,
         given_dice_cert: &DiceChainEntry,
@@ -837,7 +1037,7 @@ fn increment_global_sequence_number(
 // A helper function to write a new instance context to the persistent storage.
 fn write_persistent_instance_context(
     storage: &mut dyn PersistentStorage,
-    instance_id: &Arc<InstanceIdentifier>,
+    instance_id: &InstanceIdentifier,
     instance_ctx: &PersistentInstanceContext,
 ) -> Result<(), Error> {
     let path =
@@ -849,7 +1049,7 @@ fn write_persistent_instance_context(
 // A helper function to read the instance context from the persistent storage.
 fn read_persistent_instance_context(
     storage: &dyn PersistentStorage,
-    instance_id: &Arc<InstanceIdentifier>,
+    instance_id: &InstanceIdentifier,
 ) -> Result<Option<PersistentInstanceContext>, Error> {
     let path =
         storage.build_storage_file_path_for_instance(instance_id, &StorageModeForPvm::Normal)?;
@@ -861,7 +1061,7 @@ fn read_persistent_instance_context(
 // A helper function to update the instance's DICE policy in the persistent storage.
 fn update_persistent_instance_policy(
     storage: &mut dyn PersistentStorage,
-    instance_id: &Arc<InstanceIdentifier>,
+    instance_id: &InstanceIdentifier,
     latest_dice_policy: &Arc<DicePolicy>,
     instance_ctx: &mut PersistentInstanceContext,
 ) -> Result<(), Error> {
@@ -875,7 +1075,7 @@ fn update_persistent_instance_policy(
 // A helper function to write a new client context to the persistent storage.
 fn write_persistent_client_context(
     storage: &mut dyn PersistentStorage,
-    instance_id: &Arc<InstanceIdentifier>,
+    instance_id: &InstanceIdentifier,
     instance_seq_number: i64,
     client_id: &Arc<ClientId>,
     client_ctx: &PersistentClientContext,
@@ -893,7 +1093,7 @@ fn write_persistent_client_context(
 // A helper function to read the client context from the persistent storage.
 fn read_persistent_client_context(
     storage: &dyn PersistentStorage,
-    instance_id: &Arc<InstanceIdentifier>,
+    instance_id: &InstanceIdentifier,
     instance_seq_number: i64,
     client_id: &Arc<ClientId>,
 ) -> Result<Option<PersistentClientContext>, Error> {
@@ -911,7 +1111,7 @@ fn read_persistent_client_context(
 // A helper function to update the client's DICE policy in the persistent storage.
 fn update_persistent_client_policy(
     storage: &mut dyn PersistentStorage,
-    instance_id: &Arc<InstanceIdentifier>,
+    instance_id: &InstanceIdentifier,
     instance_seq_number: i64,
     client_id: &Arc<ClientId>,
     latest_dice_policy: &Arc<DicePolicy>,

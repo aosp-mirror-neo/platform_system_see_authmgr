@@ -139,6 +139,18 @@ impl InstanceIdentifier {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ClientId(pub Vec<u8>);
 
+/// Encapsulates the instance metadata
+pub struct InstanceMetaData {
+    /// A reference to an arc pointing to the instance identifier
+    pub instance_id: Arc<InstanceIdentifier>,
+    /// Instance sequence number
+    pub instance_seq_number: i64,
+    /// DICE chain mode for the instance
+    pub dice_chain_mode: DiceChainModeForPvm,
+    /// Storage mode for the instance
+    pub storage_mode: StorageModeForPvm,
+}
+
 /// Information stored in an authenticated connection established between a pVM and the AuthMgr BE.
 /// This information is re-used when serving multiple requests for authorizing the
 /// clients in the pVM
@@ -149,6 +161,11 @@ pub struct AuthenticatedConnectionInfo {
     pub transport_id: TransportID,
     /// Unique sequence number assigned to the instance by the AuthMgr BE
     pub instance_seq_number: i64,
+    /// DICE chain mode for the pvm derived from the DICE certificate chain
+    pub dice_chain_mode: DiceChainModeForPvm,
+    /// Storage mode derived based on which storage file path allocated to the given instance-id is
+    /// used to read the instance-context
+    pub storage_mode: StorageModeForPvm,
     /// DICE artifacts of the pvm
     pub dice_artifacts: DiceArtifacts,
     /// Public key of the signing key pair of the pvm
@@ -164,9 +181,8 @@ pub struct AuthenticatedConnectionInfo {
 impl AuthenticatedConnectionInfo {
     /// Populate the information to be stored in-memory in the connection state
     pub fn new(
-        instance_id: Arc<InstanceIdentifier>,
+        instance_metadata: InstanceMetaData,
         transport_id: TransportID,
-        instance_seq_number: i64,
         dice_artifacts: DiceArtifacts,
         pub_signing_key: EcVerifyKey,
         is_persistent: bool,
@@ -175,9 +191,11 @@ impl AuthenticatedConnectionInfo {
         let mut authorized_clients = Vec::<AuthorizedClient>::new();
         authorized_clients.try_reserve(max_num_of_clients)?;
         Ok(Self {
-            instance_id,
+            instance_id: instance_metadata.instance_id,
             transport_id,
-            instance_seq_number,
+            instance_seq_number: instance_metadata.instance_seq_number,
+            dice_chain_mode: instance_metadata.dice_chain_mode,
+            storage_mode: instance_metadata.storage_mode,
             dice_artifacts,
             pub_signing_key,
             is_persistent,
@@ -217,6 +235,11 @@ impl AuthenticatedConnectionInfo {
         }
         self.authorized_clients.push(authorized_client);
         Ok(())
+    }
+
+    /// Remove authorized client via the sequence number
+    pub fn remove_via_sequence_number(&mut self, sequence_number: i64) {
+        self.authorized_clients.retain(|client| client.sequence_number != sequence_number);
     }
 }
 
@@ -382,13 +405,14 @@ impl AuthStartedPvm {
         &self,
         auth_started_pvms: &mut AuthStartedPvms,
         authenticated_pvms: &mut AuthenticatedPvms,
+        sequence_number: i64,
     ) -> Result<(), Error> {
         // Remove any other entries in `AuthStartedPvms` based on the authenticated instance id and
         // the DICE chain mode to enforce the Trust On First Use (TOFU) principle and prioritizing
         // instances with dice chain mode=Normal.
         auth_started_pvms
             .remove_via_instance_id_and_dice_chain_mode(&self.instance_id, self.dice_chain_mode);
-        authenticated_pvms.insert(self)
+        authenticated_pvms.insert(self, sequence_number)
     }
 }
 
@@ -476,6 +500,8 @@ pub struct AuthenticatedPvm {
     pub instance_id: Arc<InstanceIdentifier>,
     /// Dice chain mode
     pub dice_chain_mode: DiceChainModeForPvm,
+    /// Instance sequence number
+    pub sequence_number: i64,
     /// Transport id of the pvm
     pub transport_id: TransportID,
 }
@@ -497,7 +523,11 @@ impl AuthenticatedPvms {
     }
 
     /// Insert a new entry to the list, constructed from the given AuthStartedPvm
-    pub fn insert(&mut self, auth_started_pvm: &AuthStartedPvm) -> Result<(), Error> {
+    pub fn insert(
+        &mut self,
+        auth_started_pvm: &AuthStartedPvm,
+        sequence_number: i64,
+    ) -> Result<(), Error> {
         if self.authenticated_pvms.len() == self.capacity {
             return Err(am_err!(
                 MemoryAllocationFailed,
@@ -507,6 +537,7 @@ impl AuthenticatedPvms {
         let authenticated_pvm = AuthenticatedPvm {
             instance_id: Arc::clone(&auth_started_pvm.instance_id),
             dice_chain_mode: auth_started_pvm.dice_chain_mode,
+            sequence_number,
             transport_id: auth_started_pvm.transport_id,
         };
         self.authenticated_pvms.push(authenticated_pvm);
@@ -530,6 +561,13 @@ impl AuthenticatedPvms {
     /// authenticated instances
     pub fn has_transport_id(&self, transport_id: TransportID) -> bool {
         self.authenticated_pvms.iter().any(|entry| entry.transport_id == transport_id)
+    }
+
+    /// Check if a pvm with a given sequence number already exists in the list - this is used to
+    /// perform duplication checks in completeAuthentication step (i.e. step 2 of phase 1) for
+    /// already authenticated pvms
+    pub fn has_sequence_number(&self, sequence_number: i64) -> bool {
+        self.authenticated_pvms.iter().any(|entry| entry.sequence_number == sequence_number)
     }
 
     /// Remove a pvm instance via its transport id (upon connection close)
@@ -769,6 +807,12 @@ impl AuthorizedClientsGlobalList {
     pub fn remove_via_client_id(&mut self, client_id: &ClientId) {
         self.authorized_clients_list
             .retain(|authorized_clients| *authorized_clients.client_id == *client_id);
+    }
+
+    /// Remove an entry given the client sequence number
+    pub fn remove_via_sequence_number(&mut self, sequence_number: i64) {
+        self.authorized_clients_list
+            .retain(|authorized_client| authorized_client.sequence_number != sequence_number);
     }
 }
 
