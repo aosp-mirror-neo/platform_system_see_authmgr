@@ -139,6 +139,18 @@ impl InstanceIdentifier {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ClientId(pub Vec<u8>);
 
+/// Encapsulates the instance metadata
+pub struct InstanceMetaData {
+    /// A reference to an arc pointing to the instance identifier
+    pub instance_id: Arc<InstanceIdentifier>,
+    /// Instance sequence number
+    pub instance_seq_number: i64,
+    /// DICE chain mode for the instance
+    pub dice_chain_mode: DiceChainModeForPvm,
+    /// Storage mode for the instance
+    pub storage_mode: StorageModeForPvm,
+}
+
 /// Information stored in an authenticated connection established between a pVM and the AuthMgr BE.
 /// This information is re-used when serving multiple requests for authorizing the
 /// clients in the pVM
@@ -149,6 +161,11 @@ pub struct AuthenticatedConnectionInfo {
     pub transport_id: TransportID,
     /// Unique sequence number assigned to the instance by the AuthMgr BE
     pub instance_seq_number: i64,
+    /// DICE chain mode for the pvm derived from the DICE certificate chain
+    pub dice_chain_mode: DiceChainModeForPvm,
+    /// Storage mode derived based on which storage file path allocated to the given instance-id is
+    /// used to read the instance-context
+    pub storage_mode: StorageModeForPvm,
     /// DICE artifacts of the pvm
     pub dice_artifacts: DiceArtifacts,
     /// Public key of the signing key pair of the pvm
@@ -164,9 +181,8 @@ pub struct AuthenticatedConnectionInfo {
 impl AuthenticatedConnectionInfo {
     /// Populate the information to be stored in-memory in the connection state
     pub fn new(
-        instance_id: Arc<InstanceIdentifier>,
+        instance_metadata: InstanceMetaData,
         transport_id: TransportID,
-        instance_seq_number: i64,
         dice_artifacts: DiceArtifacts,
         pub_signing_key: EcVerifyKey,
         is_persistent: bool,
@@ -175,9 +191,11 @@ impl AuthenticatedConnectionInfo {
         let mut authorized_clients = Vec::<AuthorizedClient>::new();
         authorized_clients.try_reserve(max_num_of_clients)?;
         Ok(Self {
-            instance_id,
+            instance_id: instance_metadata.instance_id,
             transport_id,
-            instance_seq_number,
+            instance_seq_number: instance_metadata.instance_seq_number,
+            dice_chain_mode: instance_metadata.dice_chain_mode,
+            storage_mode: instance_metadata.storage_mode,
             dice_artifacts,
             pub_signing_key,
             is_persistent,
@@ -217,6 +235,11 @@ impl AuthenticatedConnectionInfo {
         }
         self.authorized_clients.push(authorized_client);
         Ok(())
+    }
+
+    /// Remove authorized client via the sequence number
+    pub fn remove_via_sequence_number(&mut self, sequence_number: i64) {
+        self.authorized_clients.retain(|client| client.sequence_number != sequence_number);
     }
 }
 
@@ -329,6 +352,37 @@ pub enum DiceChainModeForPvm {
     Normal = 1,
 }
 
+/// Enum with two variants indicating whether the instance-context of a pVM is stored in the area
+/// (i.e. storage file path) allocated for the given instance-id with dice-chain-mode = Normal or
+/// dice-chain-mode = NotNormal.
+/// We need a separate enum that is different from `DiceChainModeForPvm` enum to represent this
+/// because a pVM with dice-chain-mode = NotNormal may read from the instance-context stored in
+/// the area allocated for the same instance-id with dice-chain-mode = Normal, if the dice policy
+/// allows it (i.e. DICE policy does not contain constraints on dice chain mode).
+/// However, an instance with dice-chain-mode = NotNormal, is not allowed to write to such
+/// instance-context stored in the area allocated for the instance-id with dice-chain-mode = Normal.
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StorageModeForPvm {
+    /// Instance-context of a pVM is stored in the area allocated for the instance-id with
+    /// dice-chain-mode = NotNormal.
+    NotNormal = 0,
+    /// Instance-context of a pVM is stored in the area allocated for the instance-id with
+    /// dice-chain-mode = Normal.
+    Normal = 1,
+}
+
+impl TryFrom<u8> for StorageModeForPvm {
+    type Error = Error;
+    fn try_from(value: u8) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(StorageModeForPvm::NotNormal),
+            1 => Ok(StorageModeForPvm::Normal),
+            _ => Err(am_err!(InternalError, "invalid value for StorageModeForPvm")),
+        }
+    }
+}
+
 /// Encapsulates information about a pVM instance which has completed step 1 of phase 1 of the
 /// AuthMgr protocol  (i.e. `init_authentication`), but not step 2 (i.e. `complete_authentication`).
 #[derive(Clone, PartialEq)]
@@ -351,13 +405,14 @@ impl AuthStartedPvm {
         &self,
         auth_started_pvms: &mut AuthStartedPvms,
         authenticated_pvms: &mut AuthenticatedPvms,
+        sequence_number: i64,
     ) -> Result<(), Error> {
         // Remove any other entries in `AuthStartedPvms` based on the authenticated instance id and
         // the DICE chain mode to enforce the Trust On First Use (TOFU) principle and prioritizing
         // instances with dice chain mode=Normal.
         auth_started_pvms
             .remove_via_instance_id_and_dice_chain_mode(&self.instance_id, self.dice_chain_mode);
-        authenticated_pvms.insert(self)
+        authenticated_pvms.insert(self, sequence_number)
     }
 }
 
@@ -445,6 +500,8 @@ pub struct AuthenticatedPvm {
     pub instance_id: Arc<InstanceIdentifier>,
     /// Dice chain mode
     pub dice_chain_mode: DiceChainModeForPvm,
+    /// Instance sequence number
+    pub sequence_number: i64,
     /// Transport id of the pvm
     pub transport_id: TransportID,
 }
@@ -466,7 +523,11 @@ impl AuthenticatedPvms {
     }
 
     /// Insert a new entry to the list, constructed from the given AuthStartedPvm
-    pub fn insert(&mut self, auth_started_pvm: &AuthStartedPvm) -> Result<(), Error> {
+    pub fn insert(
+        &mut self,
+        auth_started_pvm: &AuthStartedPvm,
+        sequence_number: i64,
+    ) -> Result<(), Error> {
         if self.authenticated_pvms.len() == self.capacity {
             return Err(am_err!(
                 MemoryAllocationFailed,
@@ -476,6 +537,7 @@ impl AuthenticatedPvms {
         let authenticated_pvm = AuthenticatedPvm {
             instance_id: Arc::clone(&auth_started_pvm.instance_id),
             dice_chain_mode: auth_started_pvm.dice_chain_mode,
+            sequence_number,
             transport_id: auth_started_pvm.transport_id,
         };
         self.authenticated_pvms.push(authenticated_pvm);
@@ -499,6 +561,13 @@ impl AuthenticatedPvms {
     /// authenticated instances
     pub fn has_transport_id(&self, transport_id: TransportID) -> bool {
         self.authenticated_pvms.iter().any(|entry| entry.transport_id == transport_id)
+    }
+
+    /// Check if a pvm with a given sequence number already exists in the list - this is used to
+    /// perform duplication checks in completeAuthentication step (i.e. step 2 of phase 1) for
+    /// already authenticated pvms
+    pub fn has_sequence_number(&self, sequence_number: i64) -> bool {
+        self.authenticated_pvms.iter().any(|entry| entry.sequence_number == sequence_number)
     }
 
     /// Remove a pvm instance via its transport id (upon connection close)
@@ -739,6 +808,12 @@ impl AuthorizedClientsGlobalList {
         self.authorized_clients_list
             .retain(|authorized_clients| *authorized_clients.client_id == *client_id);
     }
+
+    /// Remove an entry given the client sequence number
+    pub fn remove_via_sequence_number(&mut self, sequence_number: i64) {
+        self.authorized_clients_list
+            .retain(|authorized_client| authorized_client.sequence_number != sequence_number);
+    }
 }
 
 /// Max sizes of the in-memory data structures to be specified by the implementation of
@@ -809,6 +884,36 @@ pub struct ClientMetaData {
     pub client_id: ClientId,
     /// Is the instance/client persistent
     pub is_persistent: bool,
+}
+
+/// Encapsulates the metadata included in a file name of a context file
+pub struct ContextFileNameMetaData<'a> {
+    /// Prefix indicating the context file type (e.g. instance or client context)
+    pub context_prefix: &'a str,
+    /// Instance identifier
+    pub instance_id: InstanceIdentifier,
+    /// Storage mode
+    pub storage_mode: StorageModeForPvm,
+}
+
+/// Encodes data into the provided buffer. Returns a &str pointing into that buffer.
+pub fn hex_encode_into<'a>(data: &[u8], buffer: &'a mut [u8]) -> Result<&'a str, Error> {
+    // hex needs 2 bytes per input byte
+    if buffer.len() != data.len() * 2 {
+        return Err(am_err!(
+            InternalError,
+            "Buffer has incorrect size, expected: {:?}, got: {:?}",
+            data.len() * 2,
+            buffer.len()
+        ));
+    }
+
+    hex::encode_to_slice(data, buffer)
+        .map_err(|e| am_err!(InternalError, "Hex encode failed: {:?}", e))?;
+
+    // Convert the used portion of the buffer to a &str
+    core::str::from_utf8(&buffer[..data.len() * 2])
+        .map_err(|e| am_err!(InternalError, "UTF-8 conversion failed: {:?}", e))
 }
 
 #[cfg(test)]
@@ -960,23 +1065,31 @@ mod tests {
             }
         }
         let dev = MockDevice;
-        let test_vm_context_file_name =
-            dev.build_storage_file_path_for_instance(&TEST_VM_INSTANCE_ID);
+        let test_vm_context_file_name = dev
+            .build_storage_file_path_for_instance(&TEST_VM_INSTANCE_ID, &StorageModeForPvm::Normal)
+            .expect("error in building instance context file name");
         let extracted_test_vm_instance_id = dev
-            .extract_instance_id_from_context_file_name(&test_vm_context_file_name)
-            .expect("error in extracting instance id from test vm context file name");
+            .extract_metadata_from_context_file_name(&test_vm_context_file_name)
+            .expect("error in extracting instance id from test vm context file name")
+            .instance_id;
         assert_eq!(extracted_test_vm_instance_id, TEST_VM_INSTANCE_ID);
 
-        // client UUID = c0b68b1d-2dce-42ea-8398-ccc4b614b43c
         let client_id = vec![
             0xc0, 0xb6, 0x8b, 0x1d, 0x2d, 0xce, 0x42, 0xea, 0x83, 0x98, 0xcc, 0xc4, 0xb6, 0x14,
             0xb4, 0x3c,
         ];
-        let test_vm_client_context_file_name =
-            dev.build_storage_file_path_for_client(&TEST_VM_INSTANCE_ID, 12, &ClientId(client_id));
+        let test_vm_client_context_file_name = dev
+            .build_storage_file_path_for_client(
+                &TEST_VM_INSTANCE_ID,
+                &StorageModeForPvm::Normal,
+                12,
+                &ClientId(client_id),
+            )
+            .expect("error in building client context file name");
         let extracted_instance_id = dev
-            .extract_instance_id_from_context_file_name(&test_vm_client_context_file_name)
-            .expect("error in extracting instance id from test vm client context file name");
+            .extract_metadata_from_context_file_name(&test_vm_client_context_file_name)
+            .expect("error in extracting instance id from test vm client context file name")
+            .instance_id;
         assert_eq!(extracted_instance_id, TEST_VM_INSTANCE_ID);
     }
 }
